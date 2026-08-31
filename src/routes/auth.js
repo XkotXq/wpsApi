@@ -55,12 +55,12 @@ router.post("/login", async (req, res) => {
 	}
 });
 
-// OAuth2 refresh_token grant, captured live from the old app's own UI —
+// OAuth2 refresh_token grant, captured live from the old app's own UI -
 // unlike the password grant above, refresh_token/grant_type/scope all go
 // in the query string and there's no body at all (no content-type header
 // either). Same client Basic auth and tenant/istoken headers.
 //
-// Uses Node's http module (not fetch/undici) with insecureHTTPParser —
+// Uses Node's http module (not fetch/undici) with insecureHTTPParser -
 // confirmed live that this endpoint's response has a few stray bytes
 // before the real HTTP headers (undici's strict parser rejects it with
 // "Invalid header value char" and the whole request fails as "fetch
@@ -125,7 +125,7 @@ router.post("/refresh", async (req, res) => {
 		res.json({
 			token: data.access_token,
 			// Some OAuth2 servers rotate the refresh token on use, others
-			// don't return a new one — fall back to the one we sent.
+			// don't return a new one - fall back to the one we sent.
 			refreshToken: data.refresh_token ?? refreshToken,
 			expiresIn: data.expires_in,
 			userId: data.user_info?.username,

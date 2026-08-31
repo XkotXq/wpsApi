@@ -1,4 +1,4 @@
-// One-time seed for frp_catalog — copied verbatim from DEFAULT_FRP_DB in
+// One-time seed for frp_catalog - copied verbatim from DEFAULT_FRP_DB in
 // src/app/page.js so the database starts with the same catalog the app
 // currently ships hardcoded in the frontend bundle.
 export const FRP_CATALOG_SEED = [

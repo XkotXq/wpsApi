@@ -9,7 +9,7 @@ config({ path: ".env" });
 config({ path: ".env.local", override: true });
 
 // Dynamic import so this only runs (and reads process.env.DATABASE_URL)
-// after the config() calls above — a static `import` would be hoisted
+// after the config() calls above - a static `import` would be hoisted
 // above them and see an empty environment.
 const { pool } = await import("../src/db.js");
 

@@ -5,7 +5,7 @@ const CURRENT_TABLES = ["frp_current", "coated_frp_current", "filler_current"];
 
 // Resolves a drum number to a stable drums.id. If the item already has a
 // drum (existingDrumId), this renames that same drum in place instead of
-// pointing at a different one — editing the "numer szpuli" field on an
+// pointing at a different one - editing the "numer szpuli" field on an
 // existing item is a correction of that drum's label, not a swap to a
 // different physical drum. Must run inside the caller's transaction
 // (client, not pool) so it rolls back together with the rest of the write.

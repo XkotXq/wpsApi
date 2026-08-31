@@ -33,7 +33,7 @@ function rowToApi(material, row) {
     out.frpLabel = row.__catalog_label ?? "";
     out.frpName = row.__catalog_name ?? "";
     // Kept alongside frpItemNumber so older frontend code reading either
-    // name still works — both point at the same underlying value.
+    // name still works - both point at the same underlying value.
     out.frpNumber = row.frp_item_number ?? "";
     out.itemNumber = row.frp_item_number ?? "";
   }
@@ -41,7 +41,7 @@ function rowToApi(material, row) {
 }
 
 // Reads catalog columns onto each row under __catalog_* keys (via a LEFT
-// JOIN) so rowToApi can splice them in — only frp uses this today, but
+// JOIN) so rowToApi can splice them in - only frp uses this today, but
 // any material with a `catalog` config gets the same treatment.
 function withCatalogJoin(material, selectSql) {
   if (!material.catalog) return selectSql;
@@ -57,7 +57,7 @@ async function safeRollback(client) {
   try {
     await client.query("ROLLBACK");
   } catch {
-    // connection already broken — nothing more we can do here
+    // connection already broken - nothing more we can do here
   }
 }
 
@@ -175,7 +175,7 @@ export async function deleteItem(material, id) {
 // Persists drag-and-drop reordering: `order` is every id in the
 // material's table, in the desired display order.
 //
-// One bulk UPDATE...FROM unnest(), not N round trips — with ~200 rows the
+// One bulk UPDATE...FROM unnest(), not N round trips - with ~200 rows the
 // old loop meant ~200 sequential awaited queries per drag, each paying full
 // network latency. A single statement is also atomic on its own, so no
 // explicit transaction/rollback is needed here.
@@ -192,7 +192,7 @@ export async function reorderItems(material, order) {
 }
 
 // Moves an existing drum (found by drumNumber) so it sits just before
-// targetId, updating length/location/remark — mirrors handleTransfer() in
+// targetId, updating length/location/remark - mirrors handleTransfer() in
 // the frontend.
 export async function transferItem(material, body) {
   const { drumNumber, targetId, length, location, remark } = body;

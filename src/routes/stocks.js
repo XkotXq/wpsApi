@@ -11,7 +11,7 @@ router.get(
   })
 );
 
-// Registered before /:id so e.g. "frp" isn't swallowed as a stocks id —
+// Registered before /:id so e.g. "frp" isn't swallowed as a stocks id -
 // the literal "trend" second segment can't collide with /:id/:material
 // (a real material key is never literally "trend").
 router.get(

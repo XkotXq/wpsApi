@@ -1,5 +1,5 @@
 // One-off import of the /frp app's localStorage backup (ystock_backup_*.json)
-// into frp_current/coated_frp_current/filler_current — the live/editable
+// into frp_current/coated_frp_current/filler_current - the live/editable
 // inventory tables, which the API's own createItem() populates (so this
 // gets the same validation, drum resolution, and position assignment as
 // creating each item through the app itself).
@@ -56,7 +56,7 @@ async function main() {
   const data = JSON.parse(fs.readFileSync(BACKUP_FILE, "utf8"));
 
   // A physical drum can only be attached to one current item at a time
-  // (assertDrumFree in drums.js) — the source backup has a handful of
+  // (assertDrumFree in drums.js) - the source backup has a handful of
   // drum numbers reused across materials/rows (stale data the old app
   // only warned about, never blocked). First occurrence wins; the rest
   // are reported at the end instead of silently dropped.

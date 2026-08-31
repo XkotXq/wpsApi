@@ -32,7 +32,7 @@ export async function updateCatalogEntry(number, body) {
   const values = [];
   let i = 1;
   // The item number is the primary key but users can still edit it (it's
-  // a free-text field in the admin form) — allow changing it here too,
+  // a free-text field in the admin form) - allow changing it here too,
   // rather than silently ignoring edits to that field.
   if (body.number !== undefined) {
     const newNumber = String(body.number).replace(/\D/g, "");

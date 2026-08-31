@@ -33,7 +33,7 @@ function rowToApi(row, versionsById) {
   return out;
 }
 
-// "stocks" rounds (bundles) — used by the checking UI to let the person
+// "stocks" rounds (bundles) - used by the checking UI to let the person
 // pick which round to attach a just-finished material check to, and by
 // the Stock dashboard page to show the latest complete picture across
 // all 3 materials even when they weren't all checked on the same day.
@@ -52,7 +52,7 @@ export async function getStocksBundle(id) {
 }
 
 const TREND_QUERIES = {
-  // frp_stock only freezes the item number — label/name/mmc are resolved
+  // frp_stock only freezes the item number - label/name/mmc are resolved
   // from the catalog, and mmc doubles as the split dimension (mirrors
   // frp_current's design; see schema.sql).
   frp: `
@@ -68,7 +68,7 @@ const TREND_QUERIES = {
     GROUP BY sv.id, sv.performed_at, fs.frp_item_number, c.label, c.name, c.mmc
     ORDER BY sv.performed_at ASC
   `,
-  // No catalog for coated FRP — diameter is the closest thing to an
+  // No catalog for coated FRP - diameter is the closest thing to an
   // "item" identity, and type (XB/Z) is the split dimension.
   coatedFrp: `
     SELECT sv.id AS version_id, sv.performed_at,
@@ -100,10 +100,10 @@ const TREND_QUERIES = {
 
 // Per-(round, item) totals across every historical check for one
 // material, aggregated in SQL (GROUP BY) instead of the frontend
-// fetching every round's full item list and summing in JS — one query
+// fetching every round's full item list and summing in JS - one query
 // instead of N, and a payload sized to (rounds × distinct items) rather
 // than (rounds × drums). Powers the Reports page's trend/split-count
-// charts and the per-item breakdown table, for any of the 3 materials —
+// charts and the per-item breakdown table, for any of the 3 materials -
 // see TREND_QUERIES above for what "item identity" and "split" mean per
 // material (frp: item number / mmc; coatedFrp: diameter / XB-Z; filler:
 // diameter+color / color).

@@ -85,7 +85,7 @@ CREATE INDEX IF NOT EXISTS idx_filler_current_drum ON filler_current (drum_id);
 -- ── stock-take history ──────────────────────────────────────────────
 -- One row per material check (e.g. "FRP checked Tuesday"). yes_count/
 -- no_count are the totals from that check; only "yes" (found) items get
--- a snapshot row in <material>_stock below — "no" (missing) items leave
+-- a snapshot row in <material>_stock below - "no" (missing) items leave
 -- no item-level trace, which is why the count has to be stored here.
 CREATE TABLE IF NOT EXISTS stock_versions (
   id           UUID PRIMARY KEY,
@@ -98,7 +98,7 @@ CREATE TABLE IF NOT EXISTS stock_versions (
 CREATE INDEX IF NOT EXISTS idx_stock_versions_material_time ON stock_versions (material_key, performed_at DESC);
 
 -- A "stock" bundles one version per material for a given round (e.g.
--- Tuesday: frp+filler checked, coatedFrp not — its column points at
+-- Tuesday: frp+filler checked, coatedFrp not - its column points at
 -- Wednesday's still-current coatedFrp version instead of a fresh one).
 CREATE TABLE IF NOT EXISTS stocks (
   id                    UUID PRIMARY KEY,

@@ -1,7 +1,7 @@
 // One-off import of historical stock-take xlsx exports into
 // stock_versions/frp_stock/coated_frp_stock/filler_stock + a stocks
 // bundle per date. Run with: node scripts/importXlsxStocks.mjs
-// NOTE: only lists dates not already imported — 2026-08-25 and 2026-08-28
+// NOTE: only lists dates not already imported - 2026-08-25 and 2026-08-28
 // are already in the database from the first run of this script.
 import { config } from "dotenv";
 config({ path: ".env" });
@@ -56,7 +56,7 @@ function parseWorkbook(file) {
   }));
   // Some exports (e.g. 2026-08-20) have the whole sheet's drum numbers
   // typed one column over, in the XB/Z slot, leaving the real DRUM
-  // NUMBER column blank throughout — fall back to that column when the
+  // NUMBER column blank throughout - fall back to that column when the
   // expected one is empty but this one holds something other than XB/Z.
   const coatedFrpRaw = XLSX.utils.sheet_to_json(wb.Sheets["COATED FRP"], { header: 1, defval: "" }).slice(2);
   const coatedFrp = coatedFrpRaw

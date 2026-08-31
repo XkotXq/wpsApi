@@ -1,4 +1,4 @@
-// Field config per material. drumNumber is deliberately not listed here —
+// Field config per material. drumNumber is deliberately not listed here -
 // it's resolved through drums.js (find/create/rename a stable drums.id)
 // instead of being written as a plain column by the generic loop in
 // items.js. `aliases` lets a field accept older/alternate body keys
@@ -6,7 +6,7 @@
 //
 // frp.catalog wires frp_current.frp_item_number up to frp_catalog for a
 // read-time join (type/mmc/label/name are derived from the catalog, not
-// stored per item) — see items.js. A future material with its own
+// stored per item) - see items.js. A future material with its own
 // catalog table can reuse the same mechanism by setting `catalog` too.
 
 export const MATERIALS = {
@@ -46,7 +46,7 @@ export const MATERIALS = {
       diameter: { column: "diameter", type: "text", default: "" },
       length: { column: "length", type: "text", default: "" },
       location: { column: "location", type: "enum", values: ["PRZED", "ZA"], default: "PRZED" },
-      // DB column is named flameproof (the semantically correct name —
+      // DB column is named flameproof (the semantically correct name -
       // see schema.sql); the API/frontend field stays isincendiary so the
       // existing UI needs no changes.
       isincendiary: { column: "flameproof", type: "bool", default: false },

@@ -9,7 +9,7 @@ function ageSeconds(lockedAt) {
   return (Date.now() - new Date(lockedAt).getTime()) / 1000;
 }
 
-// Read-only status check — used for polling so other viewers know whether
+// Read-only status check - used for polling so other viewers know whether
 // a category is currently locked for editing by someone else.
 export async function getLockStatus(materialKey) {
   const { rows } = await pool.query("SELECT * FROM category_locks WHERE material = $1", [materialKey]);
@@ -41,7 +41,7 @@ export async function acquireLock(materialKey, clientId) {
 }
 
 // Renews an already-held lock so it doesn't expire while someone is still
-// actively editing — call this periodically while a category is open.
+// actively editing - call this periodically while a category is open.
 export async function heartbeatLock(materialKey, clientId) {
   const { rows } = await pool.query("SELECT * FROM category_locks WHERE material = $1", [materialKey]);
   const lock = rows[0];

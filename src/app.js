@@ -25,7 +25,7 @@ api.use("/catalog", catalogRouter);
 api.use("/checks/:material", loadMaterial, checksRouter);
 api.use("/locks/:material", loadMaterial, locksRouter);
 api.use("/stocks", stocksRouter);
-// Generic item routes last — every other :material key is matched here.
+// Generic item routes last - every other :material key is matched here.
 api.use("/:material", loadMaterial, itemsRouter);
 
 app.use("/api", api);

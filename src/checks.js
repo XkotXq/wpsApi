@@ -7,16 +7,16 @@ async function safeRollback(client) {
   try {
     await client.query("ROLLBACK");
   } catch {
-    // connection already broken — nothing more we can do here
+    // connection already broken - nothing more we can do here
   }
 }
 
 // Maps a *_stock snapshot row to the shape frontends expect from a
-// check-history entry — both the old frp app's generateBalance()
+// check-history entry - both the old frp app's generateBalance()
 // (.drumNumber/.itemNumber/.name/.length) and wps's mapFrpItem/
 // mapCoatedFrpItem/mapFillerItem (materials-data.js), which additionally
 // read .id/.frpLabel/.type/.location/.remark for the Stock/Previous
-// Stocks tables — hence the frp branch needing label/type/mmc joined in
+// Stocks tables - hence the frp branch needing label/type/mmc joined in
 // from frp_catalog (see the itemsSql queries below and in stocks.js).
 export function stockRowToSnapshotApi(materialKey, row) {
   if (materialKey === "frp") {
@@ -57,14 +57,14 @@ export function stockRowToSnapshotApi(materialKey, row) {
   };
 }
 
-// frp_stock only freezes frp_item_number — label/type/mmc are resolved
+// frp_stock only freezes frp_item_number - label/type/mmc are resolved
 // from the catalog at read time (see schema.sql), same as frp_current.
 export const FRP_STOCK_ITEMS_SQL =
   `SELECT s.*, c.name AS __catalog_name, c.label AS __catalog_label, c.type AS __catalog_type, c.mmc AS __catalog_mmc ` +
   `FROM frp_stock s LEFT JOIN frp_catalog c ON c.item_number = s.frp_item_number WHERE s.version_id = $1`;
 
 // History of finished stock-takes for a material (oldest first), used to
-// compute a period-over-period balance/diff — mirrors the existing
+// compute a period-over-period balance/diff - mirrors the existing
 // frpStockHistory feature (currently kept in localStorage).
 export async function listChecks(materialKey, limit) {
   const material = getMaterial(materialKey);
@@ -145,7 +145,7 @@ const STOCKS_VERSION_COLUMN = { frp: "frp_version_id", coatedFrp: "coated_frp_ve
 
 // Starts a brand-new "stocks" round containing just this version, carrying
 // forward the latest existing version for the other two materials so
-// every stocks row always covers all three categories — see the "Tuesday
+// every stocks row always covers all three categories - see the "Tuesday
 // frp+filler / Wednesday coatedFrp / Friday frp+filler" example this was
 // designed against. Used when the person doing the check picks "new
 // stock" instead of attaching to an existing round (GET /stocks lists the
@@ -166,7 +166,7 @@ async function createNewStocksBundle(client, materialKey, versionId) {
   return stockId;
 }
 
-// Attaches this version to a specific, already-existing "stocks" round —
+// Attaches this version to a specific, already-existing "stocks" round -
 // the person doing the check chose it explicitly (see GET /stocks).
 async function attachToStocksBundle(client, materialKey, versionId, stocksId) {
   const { rows } = await client.query(
@@ -179,7 +179,7 @@ async function attachToStocksBundle(client, materialKey, versionId, stocksId) {
 
 // Submits the final result of a stock-take (the frontend keeps "jest/brak"
 // statuses local while counting and only calls this once, at the end).
-// items = the positions marked "jest" (found) — "brak" (missing) ones
+// items = the positions marked "jest" (found) - "brak" (missing) ones
 // leave no item-level trace, only counted in noCount.
 export async function submitCheck(materialKey, body) {
   const material = getMaterial(materialKey);
