@@ -1,24 +1,28 @@
 import { config } from "dotenv";
-import { readFileSync } from "fs";
+import fs from "fs";
+import path from "path";
 import { fileURLToPath } from "url";
-import { dirname, join } from "path";
 
-config({ path: join(dirname(fileURLToPath(import.meta.url)), "..", ".env") });
-config({ path: join(dirname(fileURLToPath(import.meta.url)), "..", ".env.local"), override: true });
+// Mirrors Next.js's own env-file precedence: .env first, then .env.local
+// on top if present.
+config({ path: ".env" });
+config({ path: ".env.local", override: true });
 
-// Imported after config() so DATABASE_URL is already set when db.js
-// constructs its Pool (static imports are hoisted above regular code).
+// Dynamic import so this only runs (and reads process.env.DATABASE_URL)
+// after the config() calls above — a static `import` would be hoisted
+// above them and see an empty environment.
 const { pool } = await import("../src/db.js");
 
-async function main() {
-  const schemaPath = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "schema.sql");
-  const sql = readFileSync(schemaPath, "utf8");
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+async function migrate() {
+  const sql = fs.readFileSync(path.join(__dirname, "..", "src", "schema.sql"), "utf8");
   await pool.query(sql);
-  console.log("Migration applied.");
+  console.log("Schema applied.");
   await pool.end();
 }
 
-main().catch((err) => {
+migrate().catch((err) => {
   console.error(err);
   process.exit(1);
 });

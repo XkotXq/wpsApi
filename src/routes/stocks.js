@@ -1,62 +1,38 @@
 import { Router } from "express";
-import { asyncHandler } from "../respond.js";
-import { ApiError } from "../errors.js";
-import { MATERIAL_KEYS } from "../materials.js";
-import { createStockSession, listStockSessions, getStockSession, submitStockTake, getSessionMaterialSnapshot, finishStock } from "../stocks.js";
+import { listStocksBundles, getStocksBundle, getBundleMaterialSnapshot, getMaterialTrend } from "../stocks.js";
+import { asyncHandler } from "../asyncHandler.js";
 
-export const stocksRouter = Router();
+const router = Router();
 
-stocksRouter.param("material", (req, res, next, material) => {
-  if (!MATERIAL_KEYS.includes(material)) return next(new ApiError("Nieznany materiał.", 404));
-  next();
-});
-
-// Starts a new remanent session — call once, then submit each material
-// into it as it's counted so they end up grouped together.
-stocksRouter.post(
-  "/stocks",
+router.get(
+  "/",
   asyncHandler(async (req, res) => {
-    res.status(201).json(await createStockSession());
+    res.json(await listStocksBundles(req.query.limit));
   })
 );
 
-stocksRouter.get(
-  "/stocks",
+// Registered before /:id so e.g. "frp" isn't swallowed as a stocks id —
+// the literal "trend" second segment can't collide with /:id/:material
+// (a real material key is never literally "trend").
+router.get(
+  "/:material/trend",
   asyncHandler(async (req, res) => {
-    const limit = req.query.limit ? Number(req.query.limit) : undefined;
-    res.json(await listStockSessions({ limit }));
+    res.json(await getMaterialTrend(req.params.material));
   })
 );
 
-stocksRouter.get(
-  "/stocks/:stocksId",
+router.get(
+  "/:id",
   asyncHandler(async (req, res) => {
-    res.json(await getStockSession(req.params.stocksId));
+    res.json(await getStocksBundle(req.params.id));
   })
 );
 
-// Finishes a stock-take that was counted/edited entirely client-side:
-// applies the local item list to *_current and records the tally +
-// snapshot, all in one transaction. Registered before the generic
-// "/stocks/:stocksId/:material" route below — the literal "finish"
-// segment never collides with a real session id.
-stocksRouter.post(
-  "/stocks/finish/:material",
+router.get(
+  "/:id/:material",
   asyncHandler(async (req, res) => {
-    res.status(201).json(await finishStock(req.params.material, req.body || {}));
+    res.json(await getBundleMaterialSnapshot(req.params.id, req.params.material));
   })
 );
 
-stocksRouter.post(
-  "/stocks/:stocksId/:material",
-  asyncHandler(async (req, res) => {
-    res.status(201).json(await submitStockTake(req.params.stocksId, req.params.material, req.body || {}));
-  })
-);
-
-stocksRouter.get(
-  "/stocks/:stocksId/:material",
-  asyncHandler(async (req, res) => {
-    res.json(await getSessionMaterialSnapshot(req.params.stocksId, req.params.material));
-  })
-);
+export default router;

@@ -1,55 +1,54 @@
 import { Router } from "express";
-import { asyncHandler } from "../respond.js";
-import { ApiError } from "../errors.js";
-import { MATERIAL_KEYS } from "../materials.js";
 import { listItems, createItem, updateItem, deleteItem, reorderItems, transferItem } from "../items.js";
+import { asyncHandler } from "../asyncHandler.js";
 
-export const itemsRouter = Router();
+const router = Router({ mergeParams: true });
 
-itemsRouter.param("material", (req, res, next, material) => {
-  if (!MATERIAL_KEYS.includes(material)) return next(new ApiError("Nieznany materiał.", 404));
-  next();
-});
-
-itemsRouter.get(
-  "/items/:material",
+router.get(
+  "/",
   asyncHandler(async (req, res) => {
-    res.json(await listItems(req.params.material));
+    res.json(await listItems(req.material));
   })
 );
 
-itemsRouter.post(
-  "/items/:material",
+router.post(
+  "/",
   asyncHandler(async (req, res) => {
-    res.status(201).json(await createItem(req.params.material, req.body));
+    const data = await createItem(req.material, req.body);
+    res.status(201).json(data);
   })
 );
 
-itemsRouter.patch(
-  "/items/:material/:id",
+router.post(
+  "/reorder",
   asyncHandler(async (req, res) => {
-    res.json(await updateItem(req.params.material, req.params.id, req.body));
+    const data = await reorderItems(req.material, req.body.order);
+    res.json(data);
   })
 );
 
-itemsRouter.delete(
-  "/items/:material/:id",
+router.post(
+  "/transfer",
   asyncHandler(async (req, res) => {
-    await deleteItem(req.params.material, req.params.id);
+    const data = await transferItem(req.material, req.body);
+    res.json(data);
+  })
+);
+
+router.patch(
+  "/:id",
+  asyncHandler(async (req, res) => {
+    const data = await updateItem(req.material, req.params.id, req.body);
+    res.json(data);
+  })
+);
+
+router.delete(
+  "/:id",
+  asyncHandler(async (req, res) => {
+    await deleteItem(req.material, req.params.id);
     res.status(204).end();
   })
 );
 
-itemsRouter.post(
-  "/items/:material/reorder",
-  asyncHandler(async (req, res) => {
-    res.json(await reorderItems(req.params.material, req.body?.order));
-  })
-);
-
-itemsRouter.post(
-  "/items/:material/transfer",
-  asyncHandler(async (req, res) => {
-    res.json(await transferItem(req.params.material, req.body));
-  })
-);
+export default router;

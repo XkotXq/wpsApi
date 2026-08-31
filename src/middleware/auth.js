@@ -1,14 +1,12 @@
-import { ApiError } from "../errors.js";
-
-// Simple bearer-token check — same scheme as before: one shared secret
-// (API_TOKEN) baked into whatever frontend calls this API.
-export function auth(req, res, next) {
-  if (req.path === "/health") return next();
-
-  const header = req.get("authorization") || "";
-  const token = header.startsWith("Bearer ") ? header.slice(7) : "";
-  if (!process.env.API_TOKEN || token !== process.env.API_TOKEN) {
-    return next(new ApiError("Brak autoryzacji.", 401));
+// Single shared bearer token, checked against API_TOKEN. This is an
+// internal warehouse tool used by a handful of people from one location,
+// not a public multi-tenant app, so a full user/account system would be
+// overkill — see README.md for the reasoning.
+export function requireAuth(req, res, next) {
+  const authHeader = req.headers.authorization || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  if (!token || token !== process.env.API_TOKEN) {
+    return res.status(401).json({ error: "Unauthorized" });
   }
   next();
 }

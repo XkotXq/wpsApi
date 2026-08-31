@@ -1,34 +1,38 @@
 import { Router } from "express";
-import { asyncHandler } from "../respond.js";
 import { listCatalog, createCatalogEntry, updateCatalogEntry, deleteCatalogEntry } from "../catalog.js";
+import { asyncHandler } from "../asyncHandler.js";
 
-export const catalogRouter = Router();
+const router = Router();
 
-catalogRouter.get(
-  "/catalog",
+router.get(
+  "/",
   asyncHandler(async (req, res) => {
     res.json(await listCatalog());
   })
 );
 
-catalogRouter.post(
-  "/catalog",
+router.post(
+  "/",
   asyncHandler(async (req, res) => {
-    res.status(201).json(await createCatalogEntry(req.body));
+    const data = await createCatalogEntry(req.body);
+    res.status(201).json(data);
   })
 );
 
-catalogRouter.patch(
-  "/catalog/:itemNumber",
+router.patch(
+  "/:number",
   asyncHandler(async (req, res) => {
-    res.json(await updateCatalogEntry(req.params.itemNumber, req.body));
+    const data = await updateCatalogEntry(req.params.number, req.body);
+    res.json(data);
   })
 );
 
-catalogRouter.delete(
-  "/catalog/:itemNumber",
+router.delete(
+  "/:number",
   asyncHandler(async (req, res) => {
-    await deleteCatalogEntry(req.params.itemNumber);
+    await deleteCatalogEntry(req.params.number);
     res.status(204).end();
   })
 );
+
+export default router;
