@@ -1,8 +1,22 @@
 import { Router } from "express";
 import http from "node:http";
 import { URL } from "node:url";
+import rateLimit from "express-rate-limit";
 
 const router = Router();
+
+// Throttles credential-guessing against the old app's login (this route
+// proxies whatever it's given straight through to CIP, so nothing else
+// stops repeated attempts). Keyed by IP; the whole app is used from one
+// warehouse location, so this comfortably covers real typos without
+// needing a per-account counter.
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Zbyt wiele prób logowania. Spróbuj ponownie za kilka minut." },
+});
 
 // Loguje przez OAuth2 password grant starej aplikacji (framework pig4cloud).
 // Na razie bez captchy - randomStr/code wysyłane puste, tak jak w przykładzie
@@ -40,7 +54,7 @@ async function loginToOldApp({ username, password, randomStr, code }) {
 	return data;
 }
 
-router.post("/login", async (req, res) => {
+router.post("/login", loginLimiter, async (req, res) => {
 	try {
 		const data = await loginToOldApp(req.body ?? {});
 		res.json({
@@ -55,12 +69,12 @@ router.post("/login", async (req, res) => {
 	}
 });
 
-// OAuth2 refresh_token grant, captured live from the old app's own UI -
+// OAuth2 refresh_token grant, captured live from the old app's own UI —
 // unlike the password grant above, refresh_token/grant_type/scope all go
 // in the query string and there's no body at all (no content-type header
 // either). Same client Basic auth and tenant/istoken headers.
 //
-// Uses Node's http module (not fetch/undici) with insecureHTTPParser -
+// Uses Node's http module (not fetch/undici) with insecureHTTPParser —
 // confirmed live that this endpoint's response has a few stray bytes
 // before the real HTTP headers (undici's strict parser rejects it with
 // "Invalid header value char" and the whole request fails as "fetch
@@ -117,7 +131,7 @@ function refreshOldAppToken(refreshToken) {
 	});
 }
 
-router.post("/refresh", async (req, res) => {
+router.post("/refresh", loginLimiter, async (req, res) => {
 	const refreshToken = req.body?.refreshToken;
 	if (!refreshToken) return res.status(400).json({ error: 'Wymagane pole "refreshToken".' });
 	try {
@@ -125,7 +139,7 @@ router.post("/refresh", async (req, res) => {
 		res.json({
 			token: data.access_token,
 			// Some OAuth2 servers rotate the refresh token on use, others
-			// don't return a new one - fall back to the one we sent.
+			// don't return a new one — fall back to the one we sent.
 			refreshToken: data.refresh_token ?? refreshToken,
 			expiresIn: data.expires_in,
 			userId: data.user_info?.username,
