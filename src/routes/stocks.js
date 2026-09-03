@@ -17,7 +17,7 @@ router.get(
 router.get(
   "/:material/trend",
   asyncHandler(async (req, res) => {
-    res.json(await getMaterialTrend(req.params.material));
+    res.json(await getMaterialTrend(req.params.material, req.query.limit));
   })
 );
 

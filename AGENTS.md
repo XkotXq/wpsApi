@@ -1,22 +1,21 @@
 # Project context
 
-This is a **git-tracked mirror** of `../api` (this repo pushes to GitHub
-as `wpsapi`/`wpsApi`), the backend API in a 3-app warehouse
-stock-tracking system for FRP / coated-FRP / filler materials. Express +
-Postgres.
+This is the backend API (pushed to GitHub as `wpsapi`/`wpsApi`) in a
+3-app warehouse stock-tracking system for FRP / coated-FRP / filler
+materials. Express + Postgres. **This directory is developed and run
+directly on this machine** (`npm run dev` here, real `.env` with live
+secrets here, the port-4000 server is `node src/index.js` from here) -
+there's no separate `../api` directory to keep in sync with; this is the
+one source of truth.
 
-- `../wps` (pushed to GitHub as `wps`) — internal WMS dashboard
+- `../WPS` (pushed to GitHub as `wps`) — internal WMS dashboard
   (reports, balances, catalog, current-list editing, CIP export).
 - `../stock` (pushed to GitHub as `stock`, package name `frp`) — the
-  consumer-facing static export app warehouse staff use to do a physical
-  stock check/count.
+  consumer-facing app warehouse staff use to do a physical stock
+  check/count. Dynamic app now (not a static export); also has its own
+  unprotected `/frp-list` route outside its normal CIP login gate.
 
-Both consume this API. **`../api` is the directory that actually runs**
-(`npm run dev` there, real `.env` with live secrets there); this
-directory only mirrors `../api`'s `src/` for pushing to GitHub. Make
-changes in `../api` first, then copy them here (and `npm install` /
-`git commit`/`push` here) rather than editing this copy independently —
-otherwise the two drift.
+Both consume this API directly from the browser.
 
 ## Data model
 Generic CRUD (`src/items.js`: `listItems`/`createItem`/`updateItem`/
@@ -29,6 +28,15 @@ Live inventory lives in `frp_current` / `coated_frp_current` /
 `transferItem`) use a single `UPDATE ... FROM unnest($1::type[], ...)`
 query instead of N sequential per-row UPDATEs — keep that pattern for any
 similar bulk-write endpoint; don't reintroduce an N+1 loop.
+
+`GET /stocks/:material/trend` (`getMaterialTrend` in `src/stocks.js`,
+powers wps's Reports page) caps its result to the most recent 150 stock
+rounds *for that material* via each `TREND_QUERIES` entry's
+`recent_versions` CTE (`LIMIT $1`, capped/defaulted to
+`TREND_ROUNDS_LIMIT` in `getMaterialTrend` itself) - accepts `?limit=`,
+but never above that cap. The CTE exists so the cap drops whole old
+rounds instead of cutting off mid-round the way a LIMIT on the final
+(round × item) result set would.
 
 ## Auth
 Two layers:
@@ -44,6 +52,6 @@ Two layers:
    per-user API key system is deliberately not used. `API_TOKEN` must be
    a real random secret, generated with
    `crypto.randomBytes(32).toString("hex")`, and must match
-   `API_TOKEN`/`NEXT_PUBLIC_API_TOKEN` in `../wps/.env.local` and
+   `API_TOKEN`/`NEXT_PUBLIC_API_TOKEN` in `../WPS/.env.local` and
    `../stock/.env.local` — never leave it as the `.env.example`
    placeholder value in a real `.env`.

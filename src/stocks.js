@@ -51,11 +51,18 @@ export async function getStocksBundle(id) {
   return rowToApi(rows[0], versionsById);
 }
 
+// Each query's `recent_versions` CTE caps the trend to the most recent
+// $1 stock rounds *for that material* before joining/grouping - LIMIT on
+// the final (round × item) result set would cut off mid-round instead of
+// dropping whole old rounds.
 const TREND_QUERIES = {
   // frp_stock only freezes the item number - label/name/mmc are resolved
   // from the catalog, and mmc doubles as the split dimension (mirrors
   // frp_current's design; see schema.sql).
   frp: `
+    WITH recent_versions AS (
+      SELECT id FROM stock_versions WHERE material_key = 'frp' ORDER BY performed_at DESC LIMIT $1
+    )
     SELECT sv.id AS version_id, sv.performed_at,
            fs.frp_item_number AS group_key, c.label AS group_label, c.name AS group_sub_label,
            CASE WHEN c.mmc THEN 'mmc' ELSE 'standard' END AS split_value,
@@ -64,13 +71,16 @@ const TREND_QUERIES = {
     FROM stock_versions sv
     JOIN frp_stock fs ON fs.version_id = sv.id
     LEFT JOIN frp_catalog c ON c.item_number = fs.frp_item_number
-    WHERE sv.material_key = 'frp'
+    WHERE sv.id IN (SELECT id FROM recent_versions)
     GROUP BY sv.id, sv.performed_at, fs.frp_item_number, c.label, c.name, c.mmc
     ORDER BY sv.performed_at ASC
   `,
   // No catalog for coated FRP - diameter is the closest thing to an
   // "item" identity, and type (XB/Z) is the split dimension.
   coatedFrp: `
+    WITH recent_versions AS (
+      SELECT id FROM stock_versions WHERE material_key = 'coatedFrp' ORDER BY performed_at DESC LIMIT $1
+    )
     SELECT sv.id AS version_id, sv.performed_at,
            (cs.diameter || '|' || cs.type) AS group_key, cs.diameter AS group_label, cs.type AS group_sub_label,
            cs.type AS split_value,
@@ -78,13 +88,16 @@ const TREND_QUERIES = {
            COUNT(*) AS drum_count
     FROM stock_versions sv
     JOIN coated_frp_stock cs ON cs.version_id = sv.id
-    WHERE sv.material_key = 'coatedFrp'
+    WHERE sv.id IN (SELECT id FROM recent_versions)
     GROUP BY sv.id, sv.performed_at, cs.diameter, cs.type
     ORDER BY sv.performed_at ASC
   `,
   // Filler's identity is diameter+color; color is also the split
   // dimension (3 values instead of frp/coatedFrp's 2).
   filler: `
+    WITH recent_versions AS (
+      SELECT id FROM stock_versions WHERE material_key = 'filler' ORDER BY performed_at DESC LIMIT $1
+    )
     SELECT sv.id AS version_id, sv.performed_at,
            (fl.color || '|' || fl.diameter) AS group_key, fl.diameter AS group_label, fl.color AS group_sub_label,
            fl.color AS split_value,
@@ -92,11 +105,13 @@ const TREND_QUERIES = {
            COUNT(*) AS drum_count
     FROM stock_versions sv
     JOIN filler_stock fl ON fl.version_id = sv.id
-    WHERE sv.material_key = 'filler'
+    WHERE sv.id IN (SELECT id FROM recent_versions)
     GROUP BY sv.id, sv.performed_at, fl.diameter, fl.color
     ORDER BY sv.performed_at ASC
   `,
 };
+
+const TREND_ROUNDS_LIMIT = 150;
 
 // Per-(round, item) totals across every historical check for one
 // material, aggregated in SQL (GROUP BY) instead of the frontend
@@ -107,10 +122,11 @@ const TREND_QUERIES = {
 // see TREND_QUERIES above for what "item identity" and "split" mean per
 // material (frp: item number / mmc; coatedFrp: diameter / XB-Z; filler:
 // diameter+color / color).
-export async function getMaterialTrend(materialKey) {
+export async function getMaterialTrend(materialKey, limit) {
   const sql = TREND_QUERIES[materialKey];
   if (!sql) throw new ApiError("Nieznany materiał.", 404);
-  const { rows } = await pool.query(sql);
+  const capped = Math.min(Number(limit) || TREND_ROUNDS_LIMIT, TREND_ROUNDS_LIMIT);
+  const { rows } = await pool.query(sql, [capped]);
   return rows.map((row) => ({
     versionId: row.version_id,
     performedAt: row.performed_at,
