@@ -1,6 +1,7 @@
 import { pool } from "./db.js";
 import { newId } from "./id.js";
 import { ApiError } from "./errors.js";
+import { assertValidReceiptItem } from "./smItemValidation.js";
 
 // Materiały SM current stock - see schema.sql's sm_items/sm_units
 // comments. Whole-item upsert (not field-by-field PATCH): the frontend
@@ -41,11 +42,13 @@ export async function listSmItems() {
 
 export async function upsertSmItem(itemNo, body) {
   if (!body || typeof body !== "object") throw new ApiError("Nieprawidłowe dane.", 400);
+  const trimmedItemNo = itemNo.trim();
   const itemName = String(body.itemName ?? "").trim();
   const locationCode = String(body.locationCode ?? "").trim();
   const note = String(body.note ?? "-").trim() || "-";
   const trackedIndividually = Boolean(body.trackedIndividually);
-  if (!itemNo.trim() || !itemName) throw new ApiError("Uzupełnij numer itemu i nazwę.", 400);
+  if (!trimmedItemNo || !itemName) throw new ApiError("Uzupełnij numer itemu i nazwę.", 400);
+  await assertValidReceiptItem(trimmedItemNo, itemName);
 
   const client = await pool.connect();
   try {
@@ -58,7 +61,7 @@ export async function upsertSmItem(itemNo, body) {
          tracked_individually = EXCLUDED.tracked_individually, total_quantity = EXCLUDED.total_quantity,
          pending_quantity = EXCLUDED.pending_quantity, updated_at = now()`,
       [
-        itemNo,
+        trimmedItemNo,
         itemName,
         locationCode,
         note,
@@ -70,7 +73,7 @@ export async function upsertSmItem(itemNo, body) {
 
     // Whole-array replace: delete every existing unit for this item, then
     // reinsert whatever the caller sent (empty for an aggregate item).
-    await client.query("DELETE FROM sm_units WHERE item_no = $1", [itemNo]);
+    await client.query("DELETE FROM sm_units WHERE item_no = $1", [trimmedItemNo]);
     const units = trackedIndividually && Array.isArray(body.units) ? body.units : [];
     let position = 0;
     for (const unit of units) {
@@ -79,7 +82,7 @@ export async function upsertSmItem(itemNo, body) {
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
         [
           String(unit.id ?? "").trim() || newId(),
-          itemNo,
+          trimmedItemNo,
           String(unit.unitId ?? "").trim(),
           String(unit.quantity ?? "").trim(),
           String(unit.productBatch ?? "").trim(),
@@ -90,8 +93,8 @@ export async function upsertSmItem(itemNo, body) {
       );
     }
 
-    const { rows: itemRows } = await client.query("SELECT * FROM sm_items WHERE item_no = $1", [itemNo]);
-    const { rows: unitRows } = await client.query("SELECT * FROM sm_units WHERE item_no = $1 ORDER BY position ASC", [itemNo]);
+    const { rows: itemRows } = await client.query("SELECT * FROM sm_items WHERE item_no = $1", [trimmedItemNo]);
+    const { rows: unitRows } = await client.query("SELECT * FROM sm_units WHERE item_no = $1 ORDER BY position ASC", [trimmedItemNo]);
     await client.query("COMMIT");
     return rowToApi(itemRows[0], unitRows);
   } catch (err) {
