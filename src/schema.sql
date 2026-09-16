@@ -169,3 +169,81 @@ CREATE TABLE IF NOT EXISTS stock_status (
   updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_by   TEXT
 );
+
+-- ── Materiały SM (Stock Manager concept) ────────────────────────────
+-- Reference catalog of every known material (item number + name), used
+-- to autofill a material's name when receiving stock in the "Materiały
+-- SM" concept (see wps's lib/smMaterialsCatalog.js) - not tied to CIP or
+-- any other table here, and no FK to a current-stock table: a material
+-- can be in the catalog with nothing currently on hand, or (in theory)
+-- be received before someone adds it here.
+-- individually_tracked: whether this material is split into separate,
+-- numbered physical units (spools) instead of one combined quantity -
+-- only plain FRP items are, seeded via NULL-safe DEFAULT FALSE so an
+-- unspecified/NULL value always means "not tracked", never an error.
+CREATE TABLE IF NOT EXISTS sm_catalog (
+  item_no               TEXT PRIMARY KEY,
+  item_name             TEXT NOT NULL DEFAULT '',
+  individually_tracked  BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Current stock for "Materiały SM" (Lista materiałów SM) - mirrors the
+-- wps mock's own item shape exactly (see lib/smMaterialsSeed.js before it
+-- moved server-side): trackedIndividually items keep their per-unit
+-- detail in sm_units below and leave total_quantity blank; everything
+-- else uses total_quantity and has no sm_units rows. pending_quantity is
+-- the order-receipt workflow's holding area - quantity already received
+-- but not yet split into labeled units (see AssignSpoolNumbersPanel) -
+-- only ever set for a trackedIndividually item.
+CREATE TABLE IF NOT EXISTS sm_items (
+  item_no               TEXT PRIMARY KEY,
+  item_name             TEXT NOT NULL DEFAULT '',
+  location_code         TEXT NOT NULL DEFAULT '',
+  note                  TEXT NOT NULL DEFAULT '',
+  tracked_individually  BOOLEAN NOT NULL DEFAULT FALSE,
+  total_quantity        TEXT NOT NULL DEFAULT '',
+  pending_quantity       TEXT NOT NULL DEFAULT '',
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- One row per physical spool - only exists for a trackedIndividually
+-- sm_items row. Whole rows get replaced together with their parent
+-- item on every save (see src/smItems.js's upsertSmItem) rather than
+-- edited field-by-field, same "just resend the current state" approach
+-- sm_catalog's frontend caller doesn't need but this one does, since a
+-- single mutation (issue/receive/assign/edit) can touch several units
+-- at once.
+CREATE TABLE IF NOT EXISTS sm_units (
+  id             TEXT PRIMARY KEY,
+  item_no        TEXT NOT NULL REFERENCES sm_items(item_no) ON DELETE CASCADE,
+  unit_id        TEXT NOT NULL DEFAULT '',
+  quantity       TEXT NOT NULL DEFAULT '',
+  product_batch  TEXT NOT NULL DEFAULT '',
+  note           TEXT NOT NULL DEFAULT '',
+  cip_status     TEXT NOT NULL DEFAULT 'match' CHECK (cip_status IN ('match', 'mismatch')),
+  position       INTEGER NOT NULL DEFAULT 0,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_sm_units_item ON sm_units (item_no);
+
+-- Append-only receipt/issue log backing Historia operacji SM - replaces
+-- the old localStorage-only history (see lib/smOperationHistory.js
+-- before it moved server-side). unit_id/product_batch are blank for an
+-- operation on an aggregate (non-individually-tracked) material.
+CREATE TABLE IF NOT EXISTS sm_operations (
+  id             UUID PRIMARY KEY,
+  operation      TEXT NOT NULL CHECK (operation IN ('receipt', 'issue', 'labeling')),
+  item_no        TEXT NOT NULL,
+  item_name      TEXT NOT NULL DEFAULT '',
+  unit_id        TEXT NOT NULL DEFAULT '',
+  quantity       TEXT NOT NULL DEFAULT '',
+  location_code  TEXT NOT NULL DEFAULT '',
+  product_batch  TEXT NOT NULL DEFAULT '',
+  performed_by   TEXT,
+  performed_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_sm_operations_time ON sm_operations (performed_at DESC);

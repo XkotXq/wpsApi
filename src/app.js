@@ -9,6 +9,9 @@ import checksRouter from "./routes/checks.js";
 import locksRouter from "./routes/locks.js";
 import stocksRouter from "./routes/stocks.js";
 import itemsRouter from "./routes/items.js";
+import smCatalogRouter from "./routes/smCatalog.js";
+import smItemsRouter from "./routes/smItems.js";
+import smOperationsRouter from "./routes/smOperations.js";
 
 const app = express();
 app.use(cors());
@@ -25,6 +28,9 @@ api.use("/catalog", catalogRouter);
 api.use("/checks/:material", loadMaterial, checksRouter);
 api.use("/locks/:material", loadMaterial, locksRouter);
 api.use("/stocks", stocksRouter);
+api.use("/sm-catalog", smCatalogRouter);
+api.use("/sm-items", smItemsRouter);
+api.use("/sm-operations", smOperationsRouter);
 // Generic item routes last - every other :material key is matched here.
 api.use("/:material", loadMaterial, itemsRouter);
 
