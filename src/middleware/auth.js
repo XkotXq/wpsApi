@@ -19,7 +19,16 @@ function tokensMatch(token, expected) {
   return a.length === b.length && timingSafeEqual(paddedA, paddedB);
 }
 
+// Dev-only escape hatch for testing against a running server without
+// wiring up a matching API_TOKEN on the caller's side yet (e.g. the wps
+// dashboard hitting a fresh 401 while its own token isn't set/synced) -
+// mirrors wps's own SKIP_CIP_AUTH pattern (see its AGENTS.md): gated on
+// NODE_ENV so it can never silently accept every request in a real
+// deployment, even if SKIP_API_AUTH ends up left "true" in an env file.
+const SKIP_API_AUTH = process.env.SKIP_API_AUTH === "true" && process.env.NODE_ENV !== "production";
+
 export function requireAuth(req, res, next) {
+  if (SKIP_API_AUTH) return next();
   const authHeader = req.headers.authorization || "";
   const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
   if (!token || !process.env.API_TOKEN || !tokensMatch(token, process.env.API_TOKEN)) {

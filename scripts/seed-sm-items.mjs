@@ -12,7 +12,7 @@ const { pool } = await import("../src/db.js");
 
 // wps's own file is plain JS with an ESM export - reading + eval'ing it
 // here keeps this a one-off script without adding a cross-repo import.
-const src = fs.readFileSync("C:\\Users\\bgrotek\\Desktop\\apps\\stock\\wps\\lib\\smMaterialsSeed.js", "utf8");
+const src = fs.readFileSync("../WPS/lib/smMaterialsSeed.js", "utf8");
 const withoutExport = src.replace("export const SM_INITIAL_ITEMS", "const SM_INITIAL_ITEMS");
 const items = new Function(`${withoutExport}\nreturn SM_INITIAL_ITEMS;`)();
 

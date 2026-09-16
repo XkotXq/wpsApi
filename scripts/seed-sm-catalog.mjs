@@ -43,7 +43,7 @@ function isIndividuallyTracked(name) {
 }
 
 async function main() {
-  const items = parseMaterialList("C:\\Users\\bgrotek\\Desktop\\apps\\stock\\materialList.txt");
+  const items = parseMaterialList("../materialList.txt");
   const rows = items.map((it) => ({ ...it, individuallyTracked: isIndividuallyTracked(it.itemName) }));
   console.log(`parsed ${rows.length} unique items, ${rows.filter((r) => r.individuallyTracked).length} individually tracked`);
 
