@@ -18,6 +18,27 @@ const loginLimiter = rateLimit({
   message: { error: "Zbyt wiele prób logowania. Spróbuj ponownie za kilka minut." },
 });
 
+// Same env var/behavior as wps's own SKIP_CIP_AUTH (lib/cipSession.js) -
+// accepts any non-empty username/password locally instead of reaching
+// CIP, for when CIP itself isn't reachable (e.g. working from home, off
+// the company network/VPN). wps bypasses client-side and never calls
+// this route at all under its own flag; smpda has no server side of its
+// own, so the bypass has to live here instead, at the one place every
+// caller's login actually goes through. Hard-disabled outside
+// NODE_ENV=production builds so a leftover/misconfigured env var can
+// never let every login through on a real deployment.
+const SKIP_CIP_AUTH = process.env.NODE_ENV !== "production" && process.env.SKIP_CIP_AUTH === "true";
+
+function bypassSession(username) {
+  const trimmed = String(username ?? "").trim();
+  return {
+    access_token: "local-bypass",
+    refresh_token: "local-bypass",
+    expires_in: 60 * 60 * 24,
+    user_info: { username: trimmed, employee: trimmed },
+  };
+}
+
 // Loguje przez OAuth2 password grant starej aplikacji (framework pig4cloud).
 // Na razie bez captchy - randomStr/code wysyłane puste, tak jak w przykładzie
 // z konta testowego. Jeśli backend zacznie wymagać captchy, będzie trzeba
@@ -82,6 +103,20 @@ function loginToOldApp({ username, password, randomStr, code }) {
 }
 
 router.post("/login", loginLimiter, async (req, res) => {
+	if (SKIP_CIP_AUTH) {
+		const username = String(req.body?.username ?? "").trim();
+		if (!username || !req.body?.password) {
+			return res.status(400).json({ error: "Podaj login i hasło." });
+		}
+		const data = bypassSession(username);
+		return res.json({
+			token: data.access_token,
+			refreshToken: data.refresh_token,
+			expiresIn: data.expires_in,
+			userId: data.user_info.username,
+			name: data.user_info.employee,
+		});
+	}
 	try {
 		const data = await loginToOldApp(req.body ?? {});
 		res.json({
@@ -161,6 +196,16 @@ function refreshOldAppToken(refreshToken) {
 router.post("/refresh", loginLimiter, async (req, res) => {
 	const refreshToken = req.body?.refreshToken;
 	if (!refreshToken) return res.status(400).json({ error: 'Wymagane pole "refreshToken".' });
+	if (SKIP_CIP_AUTH && refreshToken === "local-bypass") {
+		const data = bypassSession(req.body?.username ?? "bypass");
+		return res.json({
+			token: data.access_token,
+			refreshToken: data.refresh_token,
+			expiresIn: data.expires_in,
+			userId: data.user_info.username,
+			name: data.user_info.employee,
+		});
+	}
 	try {
 		const data = await refreshOldAppToken(refreshToken);
 		res.json({
