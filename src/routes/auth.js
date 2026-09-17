@@ -22,36 +22,63 @@ const loginLimiter = rateLimit({
 // Na razie bez captchy - randomStr/code wysyłane puste, tak jak w przykładzie
 // z konta testowego. Jeśli backend zacznie wymagać captchy, będzie trzeba
 // dodać krok pobrania obrazków puzzli i sliderowe UI przed tym wywołaniem.
-async function loginToOldApp({ username, password, randomStr, code }) {
+//
+// Uses Node's http module (not fetch/undici) with insecureHTTPParser, same
+// as refreshOldAppToken below and for the same reason: CIP's response has a
+// few stray bytes before the real HTTP headers, which undici's strict
+// parser rejects outright as "fetch failed" - curl and a relaxed parser
+// both read past it fine to the real chunked JSON body underneath.
+function loginToOldApp({ username, password, randomStr, code }) {
 	const query = new URLSearchParams({
 		grant_type: "password",
 		randomStr: randomStr || "blockPuzzle",
 		code: code || "",
 	});
-
 	const basicAuth = Buffer.from(
 		`${process.env.OLD_APP_CLIENT_ID}:${process.env.OLD_APP_CLIENT_SECRET}`
 	).toString("base64");
+	const target = new URL(`${process.env.OLD_APP_BASE_URL}/auth/oauth/token?${query.toString()}`);
+	const body = new URLSearchParams({ username, password }).toString();
 
-	const res = await fetch(`${process.env.OLD_APP_BASE_URL}/auth/oauth/token?${query.toString()}`, {
-		method: "POST",
-		headers: {
-			accept: "application/json, text/plain, */*",
-			"content-type": "application/x-www-form-urlencoded",
-			authorization: `Basic ${basicAuth}`,
-			"tenant-id": process.env.OLD_APP_TENANT_ID ?? "1",
-			istoken: "false",
-		},
-		body: new URLSearchParams({ username, password }).toString(),
+	return new Promise((resolve, reject) => {
+		const req = http.request(
+			{
+				hostname: target.hostname,
+				port: target.port || 80,
+				path: `${target.pathname}${target.search}`,
+				method: "POST",
+				insecureHTTPParser: true,
+				headers: {
+					accept: "application/json, text/plain, */*",
+					"content-type": "application/x-www-form-urlencoded",
+					"content-length": Buffer.byteLength(body),
+					authorization: `Basic ${basicAuth}`,
+					"tenant-id": process.env.OLD_APP_TENANT_ID ?? "1",
+					istoken: "false",
+				},
+			},
+			(res) => {
+				let responseBody = "";
+				res.on("data", (chunk) => (responseBody += chunk));
+				res.on("end", () => {
+					let data = null;
+					try {
+						data = JSON.parse(responseBody);
+					} catch {
+						data = null;
+					}
+					if (!res.statusCode || res.statusCode >= 400 || !data?.access_token) {
+						reject(new Error(data?.msg || data?.error_description || "Nieprawidłowy login lub hasło"));
+						return;
+					}
+					resolve(data);
+				});
+			}
+		);
+		req.on("error", () => reject(new Error("Nie udało się połączyć z systemem CIP.")));
+		req.write(body);
+		req.end();
 	});
-
-	const data = await res.json().catch(() => null);
-
-	if (!res.ok || !data?.access_token) {
-		throw new Error(data?.msg || data?.error_description || "Nieprawidłowy login lub hasło");
-	}
-
-	return data;
 }
 
 router.post("/login", loginLimiter, async (req, res) => {
