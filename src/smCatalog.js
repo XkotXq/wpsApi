@@ -1,13 +1,24 @@
 import { pool } from "./db.js";
 import { ApiError } from "./errors.js";
 
-// Reference catalog of every known "Materiały SM" material (item number +
-// name + whether it's split into individually-tracked spools) - see
+// Reference catalog of every known "Materiały SM" material (category, item
+// number, name, unit, remark + whether it's split into individually-tracked
+// spools) - see
 // schema.sql's sm_catalog comment and wps's lib/smMaterialsCatalog.js,
 // which this backs.
 function rowToApi(row) {
-  return { itemNo: row.item_no, itemName: row.item_name, individualUnits: Boolean(row.individually_tracked) };
+  return {
+    category: row.category,
+    itemNo: row.item_no,
+    itemName: row.item_name,
+    unit: row.unit,
+    remark: row.remark,
+    individualUnits: Boolean(row.individually_tracked),
+  };
 }
+
+// The optional free-text columns - the API field name and its column are the same.
+const TEXT_FIELDS = ["category", "unit", "remark"];
 
 export async function listSmCatalog() {
   const { rows } = await pool.query("SELECT * FROM sm_catalog ORDER BY item_name ASC");
@@ -21,12 +32,55 @@ export async function createSmCatalogEntry(body) {
   if (!itemNo || !itemName) throw new ApiError("Podaj numer itemu i nazwę.", 400);
 
   const { rows } = await pool.query(
-    `INSERT INTO sm_catalog (item_no, item_name, individually_tracked) VALUES ($1, $2, $3)
-     ON CONFLICT (item_no) DO NOTHING RETURNING *`,
-    [itemNo, itemName, individualUnits]
+    `INSERT INTO sm_catalog (item_no, item_name, individually_tracked, category, unit, remark)
+     VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (item_no) DO NOTHING RETURNING *`,
+    [itemNo, itemName, individualUnits, ...TEXT_FIELDS.map((field) => String(body[field] ?? "").trim())]
   );
   if (!rows.length) throw new ApiError("Ten numer itemu już jest w katalogu.", 409);
   return rowToApi(rows[0]);
+}
+
+// Bulk upsert for the wps catalog import (a whole spreadsheet at once): a new
+// item number is inserted, an existing one gets category/name/unit/remark
+// overwritten. individually_tracked is left alone on update and off on insert,
+// same as the single-entry create. Rows without item number or name are
+// counted as failed rather than aborting the rest. One transaction, so a
+// database error leaves the catalog untouched.
+export async function importSmCatalogEntries(entries) {
+  if (!Array.isArray(entries)) throw new ApiError("Nieprawidłowe dane.", 400);
+  const client = await pool.connect();
+  let created = 0;
+  let updated = 0;
+  const failed = [];
+  try {
+    await client.query("BEGIN");
+    for (const entry of entries) {
+      const itemNo = String(entry?.itemNo ?? "").trim();
+      const itemName = String(entry?.itemName ?? "").trim();
+      if (!itemNo || !itemName) {
+        failed.push(itemNo);
+        continue;
+      }
+      const { rows } = await client.query(
+        `INSERT INTO sm_catalog (item_no, item_name, category, unit, remark)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (item_no) DO UPDATE SET
+           item_name = EXCLUDED.item_name, category = EXCLUDED.category, unit = EXCLUDED.unit,
+           remark = EXCLUDED.remark, updated_at = now()
+         RETURNING (xmax = 0) AS inserted`,
+        [itemNo, itemName, ...TEXT_FIELDS.map((field) => String(entry[field] ?? "").trim())]
+      );
+      if (rows[0].inserted) created += 1;
+      else updated += 1;
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+  return { created, updated, failed };
 }
 
 export async function updateSmCatalogEntry(itemNo, body) {
@@ -36,6 +90,11 @@ export async function updateSmCatalogEntry(itemNo, body) {
   if (body.itemName !== undefined) {
     sets.push(`item_name = $${i++}`);
     values.push(String(body.itemName).trim());
+  }
+  for (const field of TEXT_FIELDS) {
+    if (body[field] === undefined) continue;
+    sets.push(`${field} = $${i++}`);
+    values.push(String(body[field]).trim());
   }
   if (body.individualUnits !== undefined) {
     sets.push(`individually_tracked = $${i++}`);

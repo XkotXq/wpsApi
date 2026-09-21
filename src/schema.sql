@@ -188,6 +188,12 @@ CREATE TABLE IF NOT EXISTS sm_catalog (
   created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Added after the first version of the table (CREATE TABLE IF NOT EXISTS
+-- won't touch an existing one): free-text category, unit of measure and
+-- remark shown next to item number/name in the catalog.
+ALTER TABLE sm_catalog ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT '';
+ALTER TABLE sm_catalog ADD COLUMN IF NOT EXISTS unit     TEXT NOT NULL DEFAULT '';
+ALTER TABLE sm_catalog ADD COLUMN IF NOT EXISTS remark   TEXT NOT NULL DEFAULT '';
 
 -- Current stock for "Materiały SM" (Lista materiałów SM) - mirrors the
 -- wps mock's own item shape exactly (see lib/smMaterialsSeed.js before it
@@ -247,3 +253,12 @@ CREATE TABLE IF NOT EXISTS sm_operations (
   performed_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_sm_operations_time ON sm_operations (performed_at DESC);
+
+-- Small key/value store for Materiały SM settings. Currently one key,
+-- "spoolSeries": the ordered list of spool-number series smpda's FRP module
+-- hands out from (see src/smSpools.js) - absent means the built-in default.
+CREATE TABLE IF NOT EXISTS sm_settings (
+  key         TEXT PRIMARY KEY,
+  value       JSONB NOT NULL,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);

@@ -17,6 +17,24 @@ one source of truth.
 
 Both consume this API directly from the browser.
 
+## CIP sync (`src/cip.js`)
+Our database is the source of truth. An operation that has a counterpart in
+CIP is validated here, pushed to CIP with the CIP token of the person doing
+it, and only then applied to our tables; CIP has no notion of spools, so a
+spool operation goes to CIP as just item + quantity.
+- **`CIP_SYNC=true`** turns the push on (production). Anything else - the
+  default - sends nothing: `pushToCip()` returns `{ skipped: true }` and the
+  caller proceeds as if CIP had accepted. `/api/health` reports the current
+  state as `cipSync`, and the server logs it at startup.
+- CIP answers `{ code: 0, msg, data: null }` even for a refused operation
+  (e.g. "Cannot exceed inventory quantity"), so `cipFetch` does not judge the
+  reply - each operation's handler in `HANDLERS` decides what success is.
+  Verified for outStorage and inStorage: success is `{ code: 0, msg: null, data: true }`, a
+  refusal `{ code: 0, msg: "...", data: null }` (see `cipAccepted`). Not yet
+  verified for edit.
+- `SKIP_CIP_AUTH` (login bypass) is separate; with a bypass token a live sync
+  refuses to run.
+
 ## Data model
 Generic CRUD (`src/items.js`: `listItems`/`createItem`/`updateItem`/
 `deleteItem`/`reorderItems`/`transferItem`) driven by per-material field

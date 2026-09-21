@@ -40,6 +40,15 @@ export async function listSmItems() {
   return items.map((item) => rowToApi(item, unitsByItem.get(item.item_no) ?? []));
 }
 
+// One item with its units, or null - what the PDA reads right after a scan
+// so the stock it shows is the database's, not a list fetched earlier.
+export async function getSmItem(itemNo) {
+  const { rows: items } = await pool.query("SELECT * FROM sm_items WHERE item_no = $1", [itemNo.trim()]);
+  if (!items.length) return null;
+  const { rows: units } = await pool.query("SELECT * FROM sm_units WHERE item_no = $1 ORDER BY position ASC, created_at ASC", [items[0].item_no]);
+  return rowToApi(items[0], units);
+}
+
 export async function upsertSmItem(itemNo, body) {
   if (!body || typeof body !== "object") throw new ApiError("Nieprawidłowe dane.", 400);
   const trimmedItemNo = itemNo.trim();

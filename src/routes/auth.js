@@ -5,6 +5,19 @@ import rateLimit from "express-rate-limit";
 
 const router = Router();
 
+// CIP words its own errors in Chinese (e.g. a wrong password), which is no
+// use to the warehouse. So a failure carries a stable `code` for the client
+// to show in the language its user picked, plus a Polish `error` fallback;
+// what CIP actually said only goes to the server log.
+//   invalid_credentials   CIP refused the login
+//   cip_unreachable       CIP couldn't be reached
+//   session_expired       CIP refused the token refresh
+function authError(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
 // Throttles credential-guessing against the old app's login (this route
 // proxies whatever it's given straight through to CIP, so nothing else
 // stops repeated attempts). Keyed by IP; the whole app is used from one
@@ -15,7 +28,7 @@ const loginLimiter = rateLimit({
   limit: 10,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: "Zbyt wiele prób logowania. Spróbuj ponownie za kilka minut." },
+  message: { error: "Zbyt wiele prób logowania. Spróbuj ponownie za kilka minut.", code: "too_many_attempts" },
 });
 
 // Same env var/behavior as wps's own SKIP_CIP_AUTH (lib/cipSession.js) -
@@ -89,14 +102,15 @@ function loginToOldApp({ username, password, randomStr, code }) {
 						data = null;
 					}
 					if (!res.statusCode || res.statusCode >= 400 || !data?.access_token) {
-						reject(new Error(data?.msg || data?.error_description || "Nieprawidłowy login lub hasło"));
+						console.warn("[auth] CIP rejected the login:", data?.msg || data?.error_description || res.statusCode);
+						reject(authError("invalid_credentials", "Nieprawidłowy login lub hasło"));
 						return;
 					}
 					resolve(data);
 				});
 			}
 		);
-		req.on("error", () => reject(new Error("Nie udało się połączyć z systemem CIP.")));
+		req.on("error", () => reject(authError("cip_unreachable", "Nie udało się połączyć z systemem CIP.")));
 		req.write(body);
 		req.end();
 	});
@@ -127,7 +141,7 @@ router.post("/login", loginLimiter, async (req, res) => {
 			name: data.user_info?.employee ?? req.body?.username,
 		});
 	} catch (err) {
-		res.status(401).json({ error: err.message || "Nieprawidłowy login lub hasło" });
+		res.status(401).json({ error: err.message || "Nieprawidłowy login lub hasło", code: err.code || "invalid_credentials" });
 	}
 });
 
@@ -181,14 +195,15 @@ function refreshOldAppToken(refreshToken) {
 						data = null;
 					}
 					if (!res.statusCode || res.statusCode >= 400 || !data?.access_token) {
-						reject(new Error(data?.msg || data?.error_description || "Nie udało się odświeżyć sesji."));
+						console.warn("[auth] CIP rejected the token refresh:", data?.msg || data?.error_description || res.statusCode);
+						reject(authError("session_expired", "Nie udało się odświeżyć sesji."));
 						return;
 					}
 					resolve(data);
 				});
 			}
 		);
-		req.on("error", () => reject(new Error("Nie udało się połączyć z systemem CIP.")));
+		req.on("error", () => reject(authError("cip_unreachable", "Nie udało się połączyć z systemem CIP.")));
 		req.end();
 	});
 }
@@ -218,7 +233,7 @@ router.post("/refresh", loginLimiter, async (req, res) => {
 			name: data.user_info?.employee,
 		});
 	} catch (err) {
-		res.status(401).json({ error: err.message || "Nie udało się odświeżyć sesji." });
+		res.status(401).json({ error: err.message || "Nie udało się odświeżyć sesji.", code: err.code || "session_expired" });
 	}
 });
 

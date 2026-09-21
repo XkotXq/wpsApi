@@ -7,7 +7,12 @@ const router = Router();
 router.get(
   "/",
   asyncHandler(async (req, res) => {
-    res.json(await listSmOperations(req.query.limit, req.query.offset));
+    res.json(await listSmOperations(req.query.limit, req.query.offset, {
+        operator: req.query.operator,
+        operatorLike: req.query.operatorLike,
+        itemNo: req.query.itemNo,
+        operation: req.query.operation,
+      }));
   })
 );
 

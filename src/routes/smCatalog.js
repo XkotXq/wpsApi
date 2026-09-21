@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { listSmCatalog, createSmCatalogEntry, updateSmCatalogEntry, deleteSmCatalogEntry } from "../smCatalog.js";
+import { listSmCatalog, createSmCatalogEntry, importSmCatalogEntries, updateSmCatalogEntry, deleteSmCatalogEntry } from "../smCatalog.js";
 import { asyncHandler } from "../asyncHandler.js";
 
 const router = Router();
@@ -16,6 +16,13 @@ router.post(
   asyncHandler(async (req, res) => {
     const data = await createSmCatalogEntry(req.body);
     res.status(201).json(data);
+  })
+);
+
+router.post(
+  "/import",
+  asyncHandler(async (req, res) => {
+    res.json(await importSmCatalogEntries(req.body?.entries));
   })
 );
 

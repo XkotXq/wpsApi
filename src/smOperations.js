@@ -9,6 +9,11 @@ import { assertValidReceiptItem } from "./smItemValidation.js";
 const HISTORY_LIMIT = 500;
 const OPERATIONS = ["receipt", "issue", "labeling"];
 
+// The user's text goes into a LIKE pattern - its own % and _ must match literally.
+function escapeLike(text) {
+  return text.replace(/[\\%_]/g, (char) => `\\${char}`);
+}
+
 function rowToApi(row) {
   return {
     id: row.id,
@@ -29,16 +34,47 @@ function rowToApi(row) {
 // hard "last 500, the rest is unreachable" cutoff - see routes/smOperations.js
 // and SmMaterialsHistoryTable.js's own page state. `total` lets the client
 // know whether a next page actually exists without a second round-trip.
-export async function listSmOperations(limit, offset) {
+//
+// `filter` (all optional, combined with AND):
+//   operator      exactly this employee number (smpda's "my issues"/"my labelings")
+//   operatorLike  the text anywhere in the employee number (wps's search box)
+//   itemNo        the text anywhere in the item number
+//   operation     one kind: receipt | issue | labeling
+export async function listSmOperations(limit, offset, filter = {}) {
   const capped = Math.min(Number(limit) || HISTORY_LIMIT, HISTORY_LIMIT);
   const safeOffset = Math.max(Number(offset) || 0, 0);
+  const conditions = [];
+  const params = [];
+  const operator = String(filter.operator ?? "").trim();
+  if (operator) {
+    params.push(operator);
+    conditions.push(`performed_by = $${params.length}`);
+  }
+  const operatorLike = String(filter.operatorLike ?? "").trim();
+  if (operatorLike) {
+    params.push(`%${escapeLike(operatorLike)}%`);
+    conditions.push(`performed_by ILIKE $${params.length}`);
+  }
+  const itemNo = String(filter.itemNo ?? "").trim();
+  if (itemNo) {
+    params.push(`%${escapeLike(itemNo)}%`);
+    conditions.push(`item_no ILIKE $${params.length}`);
+  }
+  if (OPERATIONS.includes(filter.operation)) {
+    params.push(filter.operation);
+    conditions.push(`operation = $${params.length}`);
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   const [{ rows }, { rows: countRows }] = await Promise.all([
     // A whole bulk receive/issue inserts several rows in one transaction
     // with the same now() - `id` (a UUID, not chronological, but stable)
     // is only here to break that tie deterministically, so two paginated
     // queries never disagree on where one page ends and the next begins.
-    pool.query("SELECT * FROM sm_operations ORDER BY performed_at DESC, id DESC LIMIT $1 OFFSET $2", [capped, safeOffset]),
-    pool.query("SELECT count(*)::int AS total FROM sm_operations"),
+    pool.query(
+      `SELECT * FROM sm_operations ${where} ORDER BY performed_at DESC, id DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, capped, safeOffset]
+    ),
+    pool.query(`SELECT count(*)::int AS total FROM sm_operations ${where}`, params),
   ]);
   return { rows: rows.map(rowToApi), total: countRows[0].total };
 }
