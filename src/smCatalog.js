@@ -20,6 +20,17 @@ function rowToApi(row) {
 // The optional free-text columns - the API field name and its column are the same.
 const TEXT_FIELDS = ["category", "unit", "remark"];
 
+// Same rule AGENTS.md documents for wps/smpda deciding trackedIndividually:
+// a plain "FRP..." item is issued as individual spools, but a "Coated
+// FRP..." one (still filed under the "FRP" category in the source
+// spreadsheet - the two aren't split into separate categories there)
+// or anything else is issued in aggregate. Used only to seed a *new*
+// catalog row's individually_tracked on import - see importSmCatalogEntries.
+function defaultIndividualUnits(category, itemName) {
+  if (String(category ?? "").trim().toLowerCase() !== "frp") return false;
+  return !/^coated\b/i.test(String(itemName ?? "").trim());
+}
+
 export async function listSmCatalog() {
   const { rows } = await pool.query("SELECT * FROM sm_catalog ORDER BY item_name ASC");
   return rows.map(rowToApi);
@@ -42,10 +53,13 @@ export async function createSmCatalogEntry(body) {
 
 // Bulk upsert for the wps catalog import (a whole spreadsheet at once): a new
 // item number is inserted, an existing one gets category/name/unit/remark
-// overwritten. individually_tracked is left alone on update and off on insert,
-// same as the single-entry create. Rows without item number or name are
-// counted as failed rather than aborting the rest. One transaction, so a
-// database error leaves the catalog untouched.
+// overwritten. individually_tracked is left alone on update (an operator may
+// have corrected it by hand since) but defaulted from category/name on
+// insert - see defaultIndividualUnits - rather than always off, so a
+// freshly-imported plain FRP item offers spool tracking without a manual
+// edit per row afterwards. Rows without item number or name are counted as
+// failed rather than aborting the rest. One transaction, so a database error
+// leaves the catalog untouched.
 export async function importSmCatalogEntries(entries) {
   if (!Array.isArray(entries)) throw new ApiError("Nieprawidłowe dane.", 400);
   const client = await pool.connect();
@@ -61,14 +75,15 @@ export async function importSmCatalogEntries(entries) {
         failed.push(itemNo);
         continue;
       }
+      const category = String(entry.category ?? "").trim();
       const { rows } = await client.query(
-        `INSERT INTO sm_catalog (item_no, item_name, category, unit, remark)
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO sm_catalog (item_no, item_name, category, unit, remark, individually_tracked)
+         VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT (item_no) DO UPDATE SET
            item_name = EXCLUDED.item_name, category = EXCLUDED.category, unit = EXCLUDED.unit,
            remark = EXCLUDED.remark, updated_at = now()
          RETURNING (xmax = 0) AS inserted`,
-        [itemNo, itemName, ...TEXT_FIELDS.map((field) => String(entry[field] ?? "").trim())]
+        [itemNo, itemName, category, String(entry.unit ?? "").trim(), String(entry.remark ?? "").trim(), defaultIndividualUnits(category, itemName)]
       );
       if (rows[0].inserted) created += 1;
       else updated += 1;
