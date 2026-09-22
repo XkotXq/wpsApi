@@ -39,7 +39,10 @@ function rowToApi(row) {
 //   operator      exactly this employee number (smpda's "my issues"/"my labelings")
 //   operatorLike  the text anywhere in the employee number (wps's search box)
 //   itemNo        the text anywhere in the item number
-//   operation     one kind: receipt | issue | labeling
+//   operation     one or more kinds (receipt | issue | labeling), comma-
+//                 separated in the query string (wps's multiselect filter) -
+//                 an unknown value is silently dropped rather than erroring,
+//                 same as the old single-value check did
 export async function listSmOperations(limit, offset, filter = {}) {
   const capped = Math.min(Number(limit) || HISTORY_LIMIT, HISTORY_LIMIT);
   const safeOffset = Math.max(Number(offset) || 0, 0);
@@ -60,9 +63,13 @@ export async function listSmOperations(limit, offset, filter = {}) {
     params.push(`%${escapeLike(itemNo)}%`);
     conditions.push(`item_no ILIKE $${params.length}`);
   }
-  if (OPERATIONS.includes(filter.operation)) {
-    params.push(filter.operation);
-    conditions.push(`operation = $${params.length}`);
+  const operations = String(filter.operation ?? "")
+    .split(",")
+    .map((op) => op.trim())
+    .filter((op) => OPERATIONS.includes(op));
+  if (operations.length) {
+    params.push(operations);
+    conditions.push(`operation = ANY($${params.length}::text[])`);
   }
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   const [{ rows }, { rows: countRows }] = await Promise.all([
