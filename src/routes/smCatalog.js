@@ -1,5 +1,13 @@
 import { Router } from "express";
-import { listSmCatalog, createSmCatalogEntry, importSmCatalogEntries, updateSmCatalogEntry, deleteSmCatalogEntry } from "../smCatalog.js";
+import {
+  listSmCatalog,
+  getSmCatalogEntry,
+  createSmCatalogEntry,
+  importSmCatalogEntries,
+  updateSmCatalogEntry,
+  deleteSmCatalogEntry,
+} from "../smCatalog.js";
+import { ApiError } from "../errors.js";
 import { asyncHandler } from "../asyncHandler.js";
 
 const router = Router();
@@ -8,6 +16,15 @@ router.get(
   "/",
   asyncHandler(async (req, res) => {
     res.json(await listSmCatalog());
+  })
+);
+
+router.get(
+  "/:itemNo",
+  asyncHandler(async (req, res) => {
+    const entry = await getSmCatalogEntry(req.params.itemNo);
+    if (!entry) throw new ApiError("Nie znaleziono pozycji w katalogu.", 404);
+    res.json(entry);
   })
 );
 

@@ -36,6 +36,15 @@ export async function listSmCatalog() {
   return rows.map(rowToApi);
 }
 
+// One entry, straight from the database - for a caller that needs this
+// item's current category/individualUnits right now (e.g. wps's
+// ReceiveUnitPanel resolving what to receive) rather than whatever a
+// catalog list fetched earlier in the page's lifetime still holds.
+export async function getSmCatalogEntry(itemNo) {
+  const { rows } = await pool.query("SELECT * FROM sm_catalog WHERE item_no = $1", [String(itemNo ?? "").trim()]);
+  return rows.length ? rowToApi(rows[0]) : null;
+}
+
 export async function createSmCatalogEntry(body) {
   const itemNo = String(body.itemNo ?? "").trim();
   const itemName = String(body.itemName ?? "").trim();
