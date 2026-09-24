@@ -31,6 +31,14 @@ function defaultIndividualUnits(category, itemName) {
   return !/^coated\b/i.test(String(itemName ?? "").trim());
 }
 
+// A catalog rename has to reach the stock rows too: wpsapi refuses to save an
+// item whose name differs from the catalog's (assertValidReceiptItem), so a
+// sm_items row left with the old name could no longer be received or issued.
+// `db` is a pool or a client inside the import's transaction.
+async function syncStockName(db, itemNo, itemName) {
+  await db.query("UPDATE sm_items SET item_name = $1 WHERE item_no = $2 AND item_name <> $1", [itemName, itemNo]);
+}
+
 export async function listSmCatalog() {
   const { rows } = await pool.query("SELECT * FROM sm_catalog ORDER BY item_name ASC");
   return rows.map(rowToApi);
@@ -103,7 +111,10 @@ export async function importSmCatalogEntries(entries) {
         [itemNo, itemName, category, String(entry.unit ?? "").trim(), String(entry.remark ?? "").trim(), defaultIndividualUnits(category, itemName)]
       );
       if (rows[0].inserted) created += 1;
-      else updated += 1;
+      else {
+        updated += 1;
+        await syncStockName(client, itemNo, itemName);
+      }
     }
     await client.query("COMMIT");
   } catch (err) {
@@ -138,6 +149,7 @@ export async function updateSmCatalogEntry(itemNo, body) {
 
   const { rows } = await pool.query(`UPDATE sm_catalog SET ${sets.join(", ")} WHERE item_no = $${i} RETURNING *`, values);
   if (!rows.length) throw new ApiError("Nie znaleziono wpisu.", 404);
+  if (body.itemName !== undefined) await syncStockName(pool, itemNo, rows[0].item_name);
   return rowToApi(rows[0]);
 }
 
