@@ -36,6 +36,14 @@ export async function listSmCatalog() {
   return rows.map(rowToApi);
 }
 
+// The catalog's change counter (sm_catalog_meta, bumped by a trigger on every
+// insert/update/delete - see schema.sql). A client that holds a copy of the
+// list compares this number to the one it last saw.
+export async function getSmCatalogVersion() {
+  const { rows } = await pool.query("SELECT version FROM sm_catalog_meta WHERE id");
+  return Number(rows[0]?.version ?? 0);
+}
+
 // One entry, straight from the database - for a caller that needs this
 // item's current category/individualUnits right now (e.g. wps's
 // ReceiveUnitPanel resolving what to receive) rather than whatever a

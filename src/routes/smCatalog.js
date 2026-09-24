@@ -2,6 +2,7 @@ import { Router } from "express";
 import {
   listSmCatalog,
   getSmCatalogEntry,
+  getSmCatalogVersion,
   createSmCatalogEntry,
   importSmCatalogEntries,
   updateSmCatalogEntry,
@@ -16,6 +17,14 @@ router.get(
   "/",
   asyncHandler(async (req, res) => {
     res.json(await listSmCatalog());
+  })
+);
+
+// Registered before "/:itemNo" below, or "version" would be read as an item number.
+router.get(
+  "/version",
+  asyncHandler(async (req, res) => {
+    res.json({ version: await getSmCatalogVersion() });
   })
 );
 
