@@ -133,6 +133,20 @@ export async function updateSmCatalogEntry(itemNo, body) {
   return rowToApi(rows[0]);
 }
 
+// Sets one unit of measure on every entry of a category at once (the catalog
+// page's "Jednostki kategorii") instead of editing each item on its own.
+// `category` is matched exactly; an empty one means the entries that have
+// no category. Returns how many entries changed.
+export async function setSmCatalogCategoryUnit(category, unit) {
+  const trimmedUnit = String(unit ?? "").trim();
+  if (!trimmedUnit) throw new ApiError("Podaj jednostkę.", 400);
+  const { rowCount } = await pool.query(
+    "UPDATE sm_catalog SET unit = $1, updated_at = now() WHERE category = $2",
+    [trimmedUnit, String(category ?? "").trim()]
+  );
+  return { updated: rowCount };
+}
+
 export async function deleteSmCatalogEntry(itemNo) {
   const { rowCount } = await pool.query("DELETE FROM sm_catalog WHERE item_no = $1", [itemNo]);
   if (!rowCount) throw new ApiError("Nie znaleziono wpisu.", 404);
