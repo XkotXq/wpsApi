@@ -195,29 +195,6 @@ ALTER TABLE sm_catalog ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT '
 ALTER TABLE sm_catalog ADD COLUMN IF NOT EXISTS unit     TEXT NOT NULL DEFAULT '';
 ALTER TABLE sm_catalog ADD COLUMN IF NOT EXISTS remark   TEXT NOT NULL DEFAULT '';
 
--- A version counter for the whole catalog, bumped by a trigger on ANY change
--- (insert, update, delete - also a direct SQL edit or, later, a Hasura
--- mutation, not just this API's own routes). A client keeps a copy of the
--- catalog and asks GET /api/sm-catalog/version (a single number) to find out
--- whether that copy is stale, instead of downloading the whole list to compare.
-CREATE TABLE IF NOT EXISTS sm_catalog_meta (
-  id      BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id),
-  version BIGINT NOT NULL DEFAULT 0
-);
-INSERT INTO sm_catalog_meta (id, version) VALUES (TRUE, 0) ON CONFLICT (id) DO NOTHING;
-
-CREATE OR REPLACE FUNCTION bump_sm_catalog_version() RETURNS trigger AS $$
-BEGIN
-  UPDATE sm_catalog_meta SET version = version + 1 WHERE id;
-  RETURN NULL;
-END;
-$$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS sm_catalog_version_bump ON sm_catalog;
-CREATE TRIGGER sm_catalog_version_bump
-  AFTER INSERT OR UPDATE OR DELETE ON sm_catalog
-  FOR EACH STATEMENT EXECUTE PROCEDURE bump_sm_catalog_version();
-
 -- Current stock for "Materiały SM" (Lista materiałów SM) - mirrors the
 -- wps mock's own item shape exactly (see lib/smMaterialsSeed.js before it
 -- moved server-side): trackedIndividually items keep their per-unit

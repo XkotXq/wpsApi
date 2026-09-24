@@ -1,7 +1,7 @@
 import { pool } from "./db.js";
 import { newId } from "./id.js";
 import { ApiError } from "./errors.js";
-import { assertValidReceiptItem } from "./smItemValidation.js";
+import { assertItemNoFormat, catalogItemName } from "./smItemValidation.js";
 
 // Historia operacji SM - append-only log backing SmMaterialsHistoryTable,
 // written by SmMaterialsPanel's logOperation. See schema.sql's
@@ -112,14 +112,15 @@ export async function createSmOperations(entries) {
   const toInsert = entries.filter((entry) => Number(entry.quantity) > 0);
   if (!toInsert.length) return [];
 
-  // Same backstop as upsertSmItem (src/smItems.js) - only for "receipt"
-  // entries, since issue/labeling reference an item that's already on the
-  // shelf (and so already went through this check on its own receipt).
+  // Same rule as upsertSmItem (src/smItems.js): the item number's format is
+  // checked for "receipt" entries (issue/labeling reference an item that's
+  // already on the shelf), and every entry is logged under the catalog's
+  // name for a known item, whatever name the caller sent.
   for (const entry of toInsert) {
     const operation = OPERATIONS.includes(entry.operation) ? entry.operation : "receipt";
-    if (operation === "receipt") {
-      await assertValidReceiptItem(String(entry.itemNo ?? "").trim(), String(entry.itemName ?? "").trim());
-    }
+    const entryItemNo = String(entry.itemNo ?? "").trim();
+    if (operation === "receipt") assertItemNoFormat(entryItemNo);
+    entry.itemName = (await catalogItemName(entryItemNo)) ?? String(entry.itemName ?? "").trim();
   }
 
   const client = await pool.connect();

@@ -1,7 +1,7 @@
 import { pool } from "./db.js";
 import { newId } from "./id.js";
 import { ApiError } from "./errors.js";
-import { assertValidReceiptItem } from "./smItemValidation.js";
+import { assertItemNoFormat, catalogItemName } from "./smItemValidation.js";
 
 // Materiały SM current stock - see schema.sql's sm_items/sm_units
 // comments. Whole-item upsert (not field-by-field PATCH): the frontend
@@ -52,12 +52,15 @@ export async function getSmItem(itemNo) {
 export async function upsertSmItem(itemNo, body) {
   if (!body || typeof body !== "object") throw new ApiError("Nieprawidłowe dane.", 400);
   const trimmedItemNo = itemNo.trim();
-  const itemName = String(body.itemName ?? "").trim();
   const locationCode = String(body.locationCode ?? "").trim();
   const note = String(body.note ?? "-").trim() || "-";
   const trackedIndividually = Boolean(body.trackedIndividually);
-  if (!trimmedItemNo || !itemName) throw new ApiError("Uzupełnij numer itemu i nazwę.", 400);
-  await assertValidReceiptItem(trimmedItemNo, itemName);
+  if (!trimmedItemNo) throw new ApiError("Uzupełnij numer itemu i nazwę.", 400);
+  assertItemNoFormat(trimmedItemNo);
+  // The catalog names a material: a known item is saved under its catalog name
+  // whatever the caller sent (blank, stale or mistyped) - see smItemValidation.js.
+  const itemName = (await catalogItemName(trimmedItemNo)) ?? String(body.itemName ?? "").trim();
+  if (!itemName) throw new ApiError("Uzupełnij numer itemu i nazwę.", 400);
 
   const client = await pool.connect();
   try {

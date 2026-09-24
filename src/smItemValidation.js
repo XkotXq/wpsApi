@@ -2,11 +2,11 @@ import { pool } from "./db.js";
 import { ApiError } from "./errors.js";
 
 // Shared by upsertSmItem (src/smItems.js) and createSmOperations's own
-// "receipt" entries (src/smOperations.js) - both are where a receipt's
-// item number + name actually get persisted, so both need the same check
-// rather than trusting whatever wps's own resolveCatalogItemName already
-// did client-side (that's a convenience for the operator typing, not a
-// guarantee - this is the backstop that can't be bypassed).
+// entries (src/smOperations.js) - both are where an item number + name
+// actually get persisted. The server, not the caller, decides the name: a
+// material the catalog (sm_catalog) knows is always saved under the
+// catalog's name, whatever the caller sent - so a client can leave it blank,
+// hold an old one, or mistype it, and the stored name is still right.
 
 // Numer itemu is always a plain CIP-style digit string (see
 // materialList.txt / seed-sm-catalog.mjs - every real item number seen so
@@ -14,15 +14,15 @@ import { ApiError } from "./errors.js";
 // exact length, in case a shorter/longer one is ever legitimate).
 const ITEM_NO_FORMAT = /^\d+$/;
 
-// Throws an ApiError (400) if itemNo isn't a plain digit string, or if
-// itemNo is a known sm_catalog entry whose name doesn't match itemName
-// (case-insensitive) - an item number the catalog doesn't know has
-// nothing to check the name against, so it's let through as-is, same rule
-// wps's own resolveCatalogItemName follows.
-export async function assertValidReceiptItem(itemNo, itemName) {
+// Throws an ApiError (400) if itemNo isn't a plain digit string.
+export function assertItemNoFormat(itemNo) {
   if (!ITEM_NO_FORMAT.test(itemNo)) throw new ApiError("Numer itemu musi składać się wyłącznie z cyfr.", 400);
+}
+
+// The catalog's name for this item number, or null when the catalog doesn't
+// know it - an item number the catalog doesn't know keeps whatever name the
+// caller gave it.
+export async function catalogItemName(itemNo) {
   const { rows } = await pool.query("SELECT item_name FROM sm_catalog WHERE item_no = $1", [itemNo]);
-  if (rows.length && rows[0].item_name.toLowerCase() !== itemName.toLowerCase()) {
-    throw new ApiError(`Nazwa materiału nie zgadza się z katalogiem - dla ${itemNo} powinno być "${rows[0].item_name}".`, 400);
-  }
+  return rows.length ? rows[0].item_name : null;
 }
