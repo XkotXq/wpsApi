@@ -4,7 +4,7 @@ import {
   getSmCatalogEntry,
   createSmCatalogEntry,
   importSmCatalogEntries,
-  setSmCatalogCategoryUnit,
+  setSmCatalogCategoryIndividualUnits,
   updateSmCatalogEntry,
   deleteSmCatalogEntry,
 } from "../smCatalog.js";
@@ -45,9 +45,9 @@ router.post(
 );
 
 router.post(
-  "/category-unit",
+  "/category-individual-units",
   asyncHandler(async (req, res) => {
-    res.json(await setSmCatalogCategoryUnit(req.body?.category, req.body?.unit));
+    res.json(await setSmCatalogCategoryIndividualUnits(req.body?.category, req.body?.individualUnits));
   })
 );
 

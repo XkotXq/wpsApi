@@ -133,16 +133,19 @@ export async function updateSmCatalogEntry(itemNo, body) {
   return rowToApi(rows[0]);
 }
 
-// Sets one unit of measure on every entry of a category at once (the catalog
-// page's "Jednostki kategorii") instead of editing each item on its own.
-// `category` is matched exactly; an empty one means the entries that have
-// no category. Returns how many entries changed.
-export async function setSmCatalogCategoryUnit(category, unit) {
-  const trimmedUnit = String(unit ?? "").trim();
-  if (!trimmedUnit) throw new ApiError("Podaj jednostkę.", 400);
+// Sets "Osobne jednostki" (individually_tracked: split into numbered units
+// such as spools, or summed into one value) on every entry of a category at
+// once - the catalog page's per-category switch - instead of ticking it item
+// by item. `category` is matched exactly; an empty one means the entries
+// that have no category. Only rows whose value actually changes are touched.
+// Stock already on the shelf keeps its own trackedIndividually (see
+// sm_items) - this decides how a material is treated from its next receipt.
+// Returns how many entries changed.
+export async function setSmCatalogCategoryIndividualUnits(category, individualUnits) {
+  if (typeof individualUnits !== "boolean") throw new ApiError("Podaj, czy materiały mają być rozdzielone na jednostki (true/false).", 400);
   const { rowCount } = await pool.query(
-    "UPDATE sm_catalog SET unit = $1, updated_at = now() WHERE category = $2",
-    [trimmedUnit, String(category ?? "").trim()]
+    "UPDATE sm_catalog SET individually_tracked = $1, updated_at = now() WHERE category = $2 AND individually_tracked <> $1",
+    [individualUnits, String(category ?? "").trim()]
   );
   return { updated: rowCount };
 }
