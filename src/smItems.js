@@ -2,6 +2,7 @@ import { pool } from "./db.js";
 import { newId } from "./id.js";
 import { ApiError } from "./errors.js";
 import { assertItemNoFormat, catalogItemName } from "./smItemValidation.js";
+import { pushToCip } from "./cip.js";
 
 // Materiały SM current stock - see schema.sql's sm_items/sm_units
 // comments. Whole-item upsert (not field-by-field PATCH): the frontend
@@ -49,7 +50,19 @@ export async function getSmItem(itemNo) {
   return rowToApi(items[0], units);
 }
 
-export async function upsertSmItem(itemNo, body) {
+// [cipTask]: what this write represents in CIP, or undefined for a write that
+// has nothing to do with CIP (e.g. renaming a location, editing a note) -
+// callers that don't know/care about CIP simply omit it, and nothing changes
+// from before this existed. { operation: "receipt" | "issue", quantity,
+// cipToken } - quantity is the delta this one write moves (what was actually
+// received/issued just now), not the item's new total; the caller already
+// knows this number (see smpda's ReceiveIssueController.submit /
+// wps's receiveRow/issueRow), so this never has to infer it from a diff.
+// Pushed to CIP *before* anything is written here (before the DB transaction
+// even opens): a CIP refusal throws and nothing about this write ever touches
+// our tables, so our stock and CIP's can never disagree about whether an
+// operation happened.
+export async function upsertSmItem(itemNo, body, cipTask) {
   if (!body || typeof body !== "object") throw new ApiError("Nieprawidłowe dane.", 400);
   const trimmedItemNo = itemNo.trim();
   const locationCode = String(body.locationCode ?? "").trim();
@@ -61,6 +74,14 @@ export async function upsertSmItem(itemNo, body) {
   // whatever the caller sent (blank, stale or mistyped) - see smItemValidation.js.
   const itemName = (await catalogItemName(trimmedItemNo)) ?? String(body.itemName ?? "").trim();
   if (!itemName) throw new ApiError("Uzupełnij numer itemu i nazwę.", 400);
+
+  if (cipTask?.operation) {
+    await pushToCip(
+      cipTask.operation,
+      { itemNo: trimmedItemNo, itemName, quantity: cipTask.quantity, locationCode },
+      { cipToken: cipTask.cipToken }
+    );
+  }
 
   const client = await pool.connect();
   try {

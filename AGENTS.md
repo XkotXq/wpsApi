@@ -29,11 +29,32 @@ spool operation goes to CIP as just item + quantity.
 - CIP answers `{ code: 0, msg, data: null }` even for a refused operation
   (e.g. "Cannot exceed inventory quantity"), so `cipFetch` does not judge the
   reply - each operation's handler in `HANDLERS` decides what success is.
-  Verified for outStorage and inStorage: success is `{ code: 0, msg: null, data: true }`, a
-  refusal `{ code: 0, msg: "...", data: null }` (see `cipAccepted`). Not yet
-  verified for edit.
+  Verified for outStorage, inStorage and edit: success is `{ code: 0, msg: null, data: true }`, a
+  refusal `{ code: 0, msg: "...", data: null }` (see `cipAccepted`). `specifications` on an
+  outStorage write must equal `outStorageQuantity` (the amount being issued
+  right now) - confirmed live from CIP's own UI on both a full and a partial
+  issue. Sending the row's untouched on-hand `specifications` instead (this
+  code's first version) made CIP issue the row's entire amount regardless of
+  `outStorageQuantity` - caught live on 2026-09-25 when a 0.001 issue took
+  the whole row; corrected by `cipFetch`'s caller in `HANDLERS.issue`.
 - `SKIP_CIP_AUTH` (login bypass) is separate; with a bypass token a live sync
   refuses to run.
+- Wired into `upsertSmItem` (src/smItems.js): a `PUT /sm-items/:itemNo` whose body
+  carries `cipOperation`/`cipQuantity` (plus an `X-Cip-Token` header) pushes
+  that delta to CIP *before* touching our tables - see routes/smItems.js. A
+  write with neither is untouched by any of this, same as before CIP sync
+  existed. Callers: smpda's ReceiveIssueController.submit (its own CIP
+  token, already held client-side) and wps's SmMaterialsPanel.js (via the
+  Server Action lib/smItemsCipApi.js - see wps's own AGENTS.md for why that
+  extra hop exists there). `edit` (location/note changes with no quantity
+  change) is not wired into anything yet.
+- CIP has no notion of a spool - a material's quantity sits in CIP as one
+  combined number (possibly split across several rows/locations, but never by
+  spool). smpda/wps layer spool tracking on top of that combined number
+  entirely on our side; CIP only ever sees item + quantity for an
+  issue/receipt, never a spool tag. An issue spanning more than one CIP row
+  for the same item is refused (see the per-row-wins-or-nothing rule above),
+  not split across rows.
 
 ## Data model
 Generic CRUD (`src/items.js`: `listItems`/`createItem`/`updateItem`/
