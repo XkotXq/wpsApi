@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS order_types (
 INSERT INTO order_types (code, name) VALUES
   ('water_refill',      'Dolewanie wody'),
   ('material_order',    'Zamówienie materiału'),
+  ('spool_order',       'Zamówienie szpul'),
   ('goods_transport',   'Transport półproduktów i wyrobów gotowych'),
   ('waste_removal',     'Wywóz odpadu'),
   ('warehouse_return',  'Zwrot na magazyn'),
@@ -96,6 +97,8 @@ CREATE TABLE IF NOT EXISTS orders (
                                     AND coalesce(details ->> 'water', '') IN ('clean', 'dirty')
       WHEN 'material_order'    THEN to_location IS NOT NULL AND from_location IS NULL
                                     AND coalesce(details ->> 'production_order_no', '') <> ''
+      -- no agreed inputs yet: asks like a material order, minus the production order number
+      WHEN 'spool_order'       THEN to_location IS NOT NULL AND from_location IS NULL
       WHEN 'goods_transport'   THEN from_location IS NOT NULL AND to_location IS NOT NULL
       WHEN 'waste_removal'     THEN from_location IS NOT NULL AND to_location IS NULL
       WHEN 'warehouse_return'  THEN from_location IS NOT NULL AND to_location IS NULL
@@ -114,7 +117,7 @@ CREATE TABLE IF NOT EXISTS orders (
 CREATE INDEX IF NOT EXISTS orders_status_created_idx ON orders (status, created_at DESC);
 CREATE INDEX IF NOT EXISTS orders_requested_by_idx ON orders (requested_by);
 
--- Material orders only: what is ordered. Name and unit come from the catalog
+-- Material and spool orders only: what is ordered. Name and unit come from the catalog
 -- (sm_catalog) whatever the caller sends; an item the catalog doesn't know is
 -- refused, so a unit always exists.
 CREATE TABLE IF NOT EXISTS order_items (
@@ -207,12 +210,12 @@ DROP TRIGGER IF EXISTS orders_before_update ON orders;
 CREATE TRIGGER orders_before_update BEFORE UPDATE ON orders
   FOR EACH ROW EXECUTE PROCEDURE orders_before_update();
 
--- A material order needs at least one item - checked when the transaction
+-- A material or spool order needs at least one item - checked when the transaction
 -- commits, so the order and its items can be inserted together.
 CREATE OR REPLACE FUNCTION orders_require_items() RETURNS trigger AS $$
 BEGIN
-  IF NEW.type = 'material_order' AND NOT EXISTS (SELECT 1 FROM order_items WHERE order_id = NEW.id) THEN
-    RAISE EXCEPTION 'Zamówienie materiału musi mieć co najmniej jedną pozycję.';
+  IF NEW.type IN ('material_order', 'spool_order') AND NOT EXISTS (SELECT 1 FROM order_items WHERE order_id = NEW.id) THEN
+    RAISE EXCEPTION 'Zamówienie materiału lub szpul musi mieć co najmniej jedną pozycję.';
   END IF;
   RETURN NULL;
 END $$ LANGUAGE plpgsql;
@@ -222,13 +225,13 @@ CREATE CONSTRAINT TRIGGER orders_require_items AFTER INSERT ON orders
   DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE PROCEDURE orders_require_items();
 
--- Items: only on material orders, name/unit taken from the catalog.
+-- Items: only on material and spool orders, name/unit taken from the catalog.
 CREATE OR REPLACE FUNCTION order_items_before_write() RETURNS trigger AS $$
 DECLARE
   c RECORD;
 BEGIN
-  IF (SELECT type FROM orders WHERE id = NEW.order_id) <> 'material_order' THEN
-    RAISE EXCEPTION 'Pozycje można dodać tylko do zamówienia materiału.';
+  IF (SELECT type FROM orders WHERE id = NEW.order_id) NOT IN ('material_order', 'spool_order') THEN
+    RAISE EXCEPTION 'Pozycje można dodać tylko do zamówienia materiału lub szpul.';
   END IF;
   SELECT item_name, unit INTO c FROM sm_catalog WHERE item_no = NEW.item_no;
   IF NOT FOUND THEN

@@ -133,11 +133,15 @@ Tables: `lines` (SH01-07, ST01-13, FC01-03, FL01 - the only places),
 |---|---|---|---|---|
 | `water_refill` (dolewanie wody) | - | line | `{water: clean\|dirty}` | - |
 | `material_order` (zamówienie materiału) | - | line | `{production_order_no}` - one per whole order | 1+ |
+| `spool_order` (zamówienie szpul) | - | line | - (no agreed inputs yet) | 1+ |
 | `goods_transport` (półprodukty/wyroby) | line | line | - | - |
 | `waste_removal` (wywóz odpadu) | the place | - | - | - |
 | `warehouse_return` (zwrot na magazyn) | where to collect | (warehouse implied) | - | none |
 | `machine_transport` | line | line | - | - |
 
+- The WPS "Nowe zamówienie" menu offers: dolewanie wody, zamówienie materiału,
+  zamówienie szpul, transport półproduktów, wywożenie odpadu, zwrot na magazyn
+  (`machine_transport` exists in the schema but is not in the menu).
 - Required fields per type are a CHECK (`orders_type_fields`); `details`
   stays loose JSONB on purpose while the inputs move.
 - **Order number**, set by a BEFORE INSERT trigger from `created_at`:
@@ -154,9 +158,9 @@ Tables: `lines` (SH01-07, ST01-13, FC01-03, FL01 - the only places),
   `new`/`in_progress` -> `cancelled`. Timestamps are filled by the trigger,
   `taken_by`/`completed_by` ("Zrealizował") must be supplied. A closed order
   is frozen; number, type, requester and `created_at` never change.
-- `order_items` (material orders only): name and unit come from `sm_catalog`
+- `order_items` (material and spool orders): name and unit come from `sm_catalog`
   whatever is sent; an item the catalog does not know is refused. A material
-  order needs at least one item (checked at commit, so order + items insert in
+  or spool order needs at least one item (checked at commit, so order + items insert in
   one transaction).
 - `order_photos` holds only a `storage_key` - where files live (server disk
   vs S3-compatible storage such as MinIO) is undecided. Plan: the PDA uploads

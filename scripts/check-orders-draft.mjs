@@ -88,7 +88,19 @@ try {
   const { rows: items } = await client.query("SELECT * FROM order_items WHERE order_id = $1", [mat.id]);
   check("item name/unit filled from catalog", items[0].item_name === cat[0].item_name && items[0].unit === cat[0].unit, `${items[0].item_name} / ${items[0].unit}`);
   await fails("unknown item refused", () => client.query("INSERT INTO order_items (order_id, item_no, quantity) VALUES ($1, '000', 1)", [mat.id]), "Nieznany item");
-  await fails("items only on material orders", () => client.query("INSERT INTO order_items (order_id, item_no, quantity) VALUES ($1, $2, 1)", [water.id, cat[0].item_no]), "tylko do zamówienia materiału");
+  await fails("items only on material orders", () => client.query("INSERT INTO order_items (order_id, item_no, quantity) VALUES ($1, $2, 1)", [water.id, cat[0].item_no]), "tylko do zamówienia materiału lub szpul");
+
+  // --- spool order: line + items, no production order number ---
+  await fails("spool order must not have a 'from'", () => insert("spool_order", { from_location: "SH01", to_location: "SH02" }), "orders_type_fields");
+  await client.query("SET CONSTRAINTS orders_require_items IMMEDIATE");
+  await fails("spool order without items refused", () => insert("spool_order", { to_location: "SH04" }), "co najmniej jedną pozycję");
+  await client.query("SET CONSTRAINTS orders_require_items DEFERRED");
+  const spool = (await insert("spool_order", { to_location: "SH04" })).rows[0];
+  await client.query("INSERT INTO order_items (order_id, item_no, quantity) VALUES ($1, $2, 3)", [spool.id, cat[1].item_no]);
+  await client.query("SET CONSTRAINTS orders_require_items IMMEDIATE");
+  const { rows: spoolItems } = await client.query("SELECT * FROM order_items WHERE order_id = $1", [spool.id]);
+  check("spool order accepts items (name/unit from catalog)", spoolItems.length === 1 && spoolItems[0].unit === cat[1].unit, spoolItems[0]?.item_name);
+  await client.query("SET CONSTRAINTS orders_require_items DEFERRED");
 
   // --- status flow ---
   await fails("done needs completed_by", () => client.query("UPDATE orders SET status = 'done' WHERE id = $1", [water.id]), "orders_status_fields");
