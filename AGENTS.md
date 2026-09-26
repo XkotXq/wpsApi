@@ -171,6 +171,8 @@ Tables: `locations` (places; SH01-07, ST01-13, FC01-03, FL01 are the fixed produ
   whatever is sent; an item the catalog does not know is refused. A material
   or spool order needs at least one item (checked at commit, so order + items insert in
   one transaction).
+- Photos: the WPS form offers one optional photo for `goods_transport`, `waste_removal` and
+  `warehouse_return` (demo: browser-only blob URL, no upload yet).
 - `order_photos` holds only a `storage_key` - where files live (server disk
   vs S3-compatible storage such as MinIO) is undecided. Plan: the PDA uploads
   through wpsApi (Hasura does not take files), shrinks the photo first, and a
