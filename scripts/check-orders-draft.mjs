@@ -72,7 +72,19 @@ try {
   await fails("water with bad kind refused", () => insert("water_refill", { to_location: "SH01", details: { water: "muddy" } }), "orders_type_fields");
   await fails("transport needs from and to", () => insert("goods_transport", { from_location: "SH01" }), "orders_type_fields");
   await fails("waste must not have a destination", () => insert("waste_removal", { from_location: "SH01", to_location: "SH02" }), "orders_type_fields");
-  await fails("unknown line refused", () => insert("machine_transport", { from_location: "XX99", to_location: "SH02" }), "violates foreign key");
+  await fails("unknown place refused for a non-transport type", () => insert("machine_transport", { from_location: "XX99", to_location: "SH02" }), "linii produkcyjnych");
+  await fails("waste removal takes lines only", () => insert("waste_removal", { from_location: "Hala X" }), "linii produkcyjnych");
+
+  // --- goods_transport: free-text places, shared suggestions ---
+  const trip = (await insert("goods_transport", { from_location: "Hala magazynowa 2", to_location: "sh01" })).rows[0];
+  check("transport keeps a new place as typed and canonicalises a known one", trip.from_location === "Hala magazynowa 2" && trip.to_location === "SH01", `${trip.from_location} -> ${trip.to_location}`);
+  const { rows: reg } = await client.query("SELECT name, is_line FROM locations WHERE lower(name) IN ('hala magazynowa 2', 'sh01') ORDER BY name");
+  check("new place registered (not a line), known one not duplicated", reg.length === 2 && reg.some((r) => r.name === "Hala magazynowa 2" && !r.is_line) && reg.some((r) => r.name === "SH01" && r.is_line), JSON.stringify(reg));
+  const trip2 = (await insert("goods_transport", { from_location: "HALA MAGAZYNOWA 2", to_location: "Rampa 4" })).rows[0];
+  check("second order reuses the registered spelling", trip2.from_location === "Hala magazynowa 2", trip2.from_location);
+  await fails("transport from a place to itself refused", () => insert("goods_transport", { from_location: "SH01", to_location: "sh01" }), "orders_type_fields");
+  const { rows: sugg } = await client.query("SELECT name FROM locations WHERE name ILIKE '%' || $1 || '%' ORDER BY is_line DESC, name LIMIT 8", ["hala"]);
+  check("suggestions filter by typed text", sugg.length === 1 && sugg[0].name === "Hala magazynowa 2", JSON.stringify(sugg));
   await insert("warehouse_return", { from_location: "FC01" });
   await insert("machine_transport", { from_location: "ST01", to_location: "ST02" });
   check("valid return + machine transport accepted", true);

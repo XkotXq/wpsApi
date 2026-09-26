@@ -11,16 +11,31 @@
 -- a daylight-saving night. Uniqueness: the random suffix is re-drawn until free.
 
 -- ---------------------------------------------------------------- reference
--- Places an order can go to / come from: the production lines.
-CREATE TABLE IF NOT EXISTS lines (
-  code TEXT PRIMARY KEY
+-- Places an order can go to / come from. The production lines are fixed
+-- (is_line); a goods_transport order may also use any other text, which is then
+-- registered here and suggested to everyone from then on (see
+-- orders_before_insert). One shared list, not per user. Suggestions for a field:
+--   SELECT name FROM locations WHERE name ILIKE '%' || $typed || '%'
+--   ORDER BY is_line DESC, name LIMIT 8;
+CREATE TABLE IF NOT EXISTS locations (
+  name       TEXT PRIMARY KEY CHECK (btrim(name) <> ''),
+  is_line    BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-INSERT INTO lines (code)
-  SELECT 'SH' || lpad(g::text, 2, '0') FROM generate_series(1, 7) g
-  UNION ALL SELECT 'ST' || lpad(g::text, 2, '0') FROM generate_series(1, 13) g
-  UNION ALL SELECT 'FC' || lpad(g::text, 2, '0') FROM generate_series(1, 3) g
-  UNION ALL SELECT 'FL01'
+-- "sh01" must not become a second place next to "SH01".
+CREATE UNIQUE INDEX IF NOT EXISTS locations_lower_name_idx ON locations (lower(name));
+INSERT INTO locations (name, is_line)
+  SELECT 'SH' || lpad(g::text, 2, '0'), true FROM generate_series(1, 7) g
+  UNION ALL SELECT 'ST' || lpad(g::text, 2, '0'), true FROM generate_series(1, 13) g
+  UNION ALL SELECT 'FC' || lpad(g::text, 2, '0'), true FROM generate_series(1, 3) g
+  UNION ALL SELECT 'FL01', true
 ON CONFLICT DO NOTHING;
+
+-- The known spelling of a typed place (any capitals), or the trimmed text itself
+-- when it is new; NULL for blank.
+CREATE OR REPLACE FUNCTION canonical_location(txt TEXT) RETURNS TEXT AS $$
+  SELECT COALESCE((SELECT name FROM locations WHERE lower(name) = lower(btrim(txt))), NULLIF(btrim(txt), ''))
+$$ LANGUAGE sql STABLE;
 
 CREATE TABLE IF NOT EXISTS order_types (
   code TEXT PRIMARY KEY,
@@ -76,8 +91,8 @@ CREATE TABLE IF NOT EXISTS orders (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   shift_code    TEXT NOT NULL,                      -- shift it was placed in (trigger)
   shift_date    DATE NOT NULL,                      -- day that shift started (trigger)
-  from_location TEXT REFERENCES lines (code),       -- where to pick up
-  to_location   TEXT REFERENCES lines (code),       -- where to deliver
+  from_location TEXT REFERENCES locations (name),   -- where to pick up
+  to_location   TEXT REFERENCES locations (name),   -- where to deliver
   note          TEXT NOT NULL DEFAULT '',
   -- Type-specific fields: {"water": "clean"|"dirty"} for water_refill,
   -- {"production_order_no": "..."} for material_order. Kept loose on purpose -
@@ -100,6 +115,7 @@ CREATE TABLE IF NOT EXISTS orders (
       -- no agreed inputs yet: asks like a material order, minus the production order number
       WHEN 'spool_order'       THEN to_location IS NOT NULL AND from_location IS NULL
       WHEN 'goods_transport'   THEN from_location IS NOT NULL AND to_location IS NOT NULL
+                                    AND lower(from_location) <> lower(to_location)
       WHEN 'waste_removal'     THEN from_location IS NOT NULL AND to_location IS NULL
       WHEN 'warehouse_return'  THEN from_location IS NOT NULL AND to_location IS NULL
       WHEN 'machine_transport' THEN from_location IS NOT NULL AND to_location IS NOT NULL
@@ -142,7 +158,7 @@ CREATE TABLE IF NOT EXISTS order_photos (
 CREATE INDEX IF NOT EXISTS order_photos_order_idx ON order_photos (order_id);
 
 -- ------------------------------------------------------------------ triggers
--- Number + shift on insert. Concurrent orders of the same minute are
+-- Places, number and shift on insert. Concurrent orders of the same minute are
 -- serialized by an advisory lock on the number's prefix, so the "is it free"
 -- check below cannot race.
 CREATE OR REPLACE FUNCTION orders_before_insert() RETURNS trigger AS $$
@@ -152,6 +168,22 @@ DECLARE
   candidate TEXT;
   tries INT := 0;
 BEGIN
+  -- Places. A typed place takes its known spelling; goods_transport accepts any
+  -- text (a new place is registered and becomes a suggestion), every other type
+  -- only the production lines.
+  NEW.from_location := canonical_location(NEW.from_location);
+  NEW.to_location := canonical_location(NEW.to_location);
+  IF NEW.type = 'goods_transport' THEN
+    INSERT INTO locations (name)
+      SELECT p FROM unnest(ARRAY[NEW.from_location, NEW.to_location]) AS p WHERE p IS NOT NULL
+    ON CONFLICT DO NOTHING;
+  ELSIF EXISTS (
+    SELECT 1 FROM unnest(ARRAY[NEW.from_location, NEW.to_location]) AS p
+    WHERE p IS NOT NULL AND NOT EXISTS (SELECT 1 FROM locations l WHERE l.name = p AND l.is_line)
+  ) THEN
+    RAISE EXCEPTION 'To miejsce musi być jedną z linii produkcyjnych.';
+  END IF;
+
   SELECT * INTO s FROM order_shift(NEW.created_at);
   NEW.shift_code := s.shift_code;
   NEW.shift_date := s.shift_date;

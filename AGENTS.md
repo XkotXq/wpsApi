@@ -125,7 +125,7 @@ wired into `npm run migrate`, idempotent so it can be folded into
 transaction against the dev DB, asserts 27 rules and rolls back (nothing
 persists). Inputs per type were still being decided - expect changes.
 
-Tables: `lines` (SH01-07, ST01-13, FC01-03, FL01 - the only places),
+Tables: `locations` (places; SH01-07, ST01-13, FC01-03, FL01 are the fixed production lines, `is_line`),
 `order_types`, `shifts` (A 06:00, B 14:00, C 22:00 - three 8-hour shifts),
 `orders`, `order_items`, `order_photos`.
 
@@ -134,7 +134,7 @@ Tables: `lines` (SH01-07, ST01-13, FC01-03, FL01 - the only places),
 | `water_refill` (dolewanie wody) | - | line | `{water: clean\|dirty}` | - |
 | `material_order` (zamówienie materiału) | - | line | `{production_order_no}` - one per whole order | 1+ |
 | `spool_order` (zamówienie szpul) | - | line | - (no agreed inputs yet) | 1+ |
-| `goods_transport` (półprodukty/wyroby) | line | line | - | - |
+| `goods_transport` (półprodukty/wyroby) | any place | any place | - | - |
 | `waste_removal` (wywóz odpadu) | the place | - | - | - |
 | `warehouse_return` (zwrot na magazyn) | where to collect | (warehouse implied) | - | none |
 | `machine_transport` | line | line | - | - |
@@ -142,6 +142,15 @@ Tables: `lines` (SH01-07, ST01-13, FC01-03, FL01 - the only places),
 - The WPS "Nowe zamówienie" menu offers: dolewanie wody, zamówienie materiału,
   zamówienie szpul, transport półproduktów, wywożenie odpadu, zwrot na magazyn
   (`machine_transport` exists in the schema but is not in the menu).
+- **Places.** Every type but `goods_transport` takes production lines only
+  (enforced in `orders_before_insert`). `goods_transport` ("skąd"/"dokąd") takes
+  any text: a typed place takes the known spelling (case-insensitive, unique
+  index on `lower(name)`), a new one is registered in `locations` with the order
+  and is suggested from then on - one shared list, not per user (suggestions:
+  `ILIKE '%typed%'`, lines first). A transport may not go from a place to itself.
+  Planned, not built: a "Częste trasy" strip above the form (this user's most
+  frequent routes, ranked from their own past orders); the slot is a TODO
+  comment in `OrdersCipListTable.js`.
 - Required fields per type are a CHECK (`orders_type_fields`); `details`
   stays loose JSONB on purpose while the inputs move.
 - **Order number**, set by a BEFORE INSERT trigger from `created_at`:
