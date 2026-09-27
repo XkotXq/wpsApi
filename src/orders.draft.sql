@@ -264,18 +264,17 @@ CREATE CONSTRAINT TRIGGER orders_require_items AFTER INSERT ON orders
   DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE PROCEDURE orders_require_items();
 
--- Items: only on material and spool orders - the two kinds mean different
--- things and are validated differently.
---   material_order: a real material (km/kg/EA of it, per sm_catalog) -
---     name/unit always come from the catalog, never what the caller sent;
---     an item number the catalog doesn't know is refused outright.
---   spool_order: empty/new physical spools themselves, counted by piece -
---     unrelated to whatever unit the material later wound onto one is sold
---     in, so sm_catalog isn't consulted here (for now, per that decision -
---     revisit if spool types end up wanting their own reference list). unit
---     is always "szt."; item_name is whatever the caller sent (e.g. the
---     spool type, "1610"), just required to be non-blank since nothing else
---     backstops it.
+-- Items: only on material and spool orders - both counted by piece
+-- ("szt."), whatever sm_catalog's own unit for the material is (km, kg...) -
+-- an order line here is a count of pieces to hand over, not a length/weight.
+--   material_order: the item itself must be real - name comes from the
+--     catalog, never what the caller sent; an item number the catalog
+--     doesn't know is refused outright.
+--   spool_order: empty/new physical spools, which sm_catalog has no notion
+--     of at all - not consulted here (for now, per that decision - revisit
+--     if spool types end up wanting their own reference list). item_name is
+--     whatever the caller sent (e.g. the spool type, "1610"), just required
+--     to be non-blank since nothing else backstops it.
 CREATE OR REPLACE FUNCTION order_items_before_write() RETURNS trigger AS $$
 DECLARE
   order_type TEXT;
@@ -287,21 +286,68 @@ BEGIN
   END IF;
 
   IF order_type = 'material_order' THEN
-    SELECT item_name, unit INTO c FROM sm_catalog WHERE item_no = NEW.item_no;
+    SELECT item_name INTO c FROM sm_catalog WHERE item_no = NEW.item_no;
     IF NOT FOUND THEN
       RAISE EXCEPTION 'Nieznany item % - nie ma go w katalogu materiałów.', NEW.item_no;
     END IF;
     NEW.item_name := c.item_name;
-    NEW.unit := c.unit;
   ELSE
     IF btrim(coalesce(NEW.item_name, '')) = '' THEN
       RAISE EXCEPTION 'Podaj nazwę/typ szpuli.';
     END IF;
-    NEW.unit := 'szt.';
   END IF;
+  NEW.unit := 'szt.';
   RETURN NEW;
 END $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS order_items_before_write ON order_items;
 CREATE TRIGGER order_items_before_write BEFORE INSERT OR UPDATE ON order_items
   FOR EACH ROW EXECUTE PROCEDURE order_items_before_write();
+
+-- --------------------------------------------------------- material rules
+-- A standing instruction for one (line, material) pair - e.g. "line SH02
+-- needs Glass Yarn/600tex (997019...0001) issued as short lengths first".
+-- Same shape as the planned material_mapping (production_order_no,
+-- old_item_no, new_item_no): a small, manually-maintained reference table,
+-- not derived from anything. Who edits it (a WPS screen, same idea as the
+-- sm_catalog editor) is still open - see AGENTS.md.
+--
+-- One row per (line, item); item_no is deliberately NOT a whole category
+-- (sm_catalog's own grouping) - real data shows the relevant distinction
+-- (e.g. 600tex vs 1200tex Glass Yarn) lives inside one category as separate
+-- item numbers, not as a category of its own, so a category-wide rule would
+-- either miss the 600tex item or wrongly also catch the 1200tex one.
+CREATE TABLE IF NOT EXISTS line_material_rules (
+  id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  line_name  TEXT NOT NULL REFERENCES locations (name),
+  item_no    TEXT NOT NULL,
+  note       TEXT NOT NULL CHECK (btrim(note) <> ''),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (line_name, item_no)
+);
+
+-- A rule only makes sense against a real production line, not a
+-- goods_transport-registered place.
+CREATE OR REPLACE FUNCTION line_material_rules_before_write() RETURNS trigger AS $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM locations WHERE name = NEW.line_name AND is_line) THEN
+    RAISE EXCEPTION '% nie jest linią produkcyjną.', NEW.line_name;
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS line_material_rules_before_write ON line_material_rules;
+CREATE TRIGGER line_material_rules_before_write BEFORE INSERT OR UPDATE ON line_material_rules
+  FOR EACH ROW EXECUTE PROCEDURE line_material_rules_before_write();
+
+-- order_items with the standing instruction attached, when the order's own
+-- to_location (material_order/spool_order only ever deliver, never pick up)
+-- and this item match one - computed live off line_material_rules, so an
+-- edited/added rule is reflected on every order that matches it right away,
+-- not just ones placed after the edit. NULL rule_note is the common case
+-- (nothing special about this item on this line).
+CREATE OR REPLACE VIEW order_items_with_notes AS
+SELECT oi.*, r.note AS rule_note
+FROM order_items oi
+JOIN orders o ON o.id = oi.order_id
+LEFT JOIN line_material_rules r ON r.line_name = o.to_location AND r.item_no = oi.item_no;

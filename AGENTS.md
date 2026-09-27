@@ -167,13 +167,25 @@ Tables: `locations` (places; SH01-07, ST01-13, FC01-03, FL01 are the fixed produ
   `new`/`in_progress` -> `cancelled`. Timestamps are filled by the trigger,
   `taken_by`/`completed_by` ("Zrealizował") must be supplied. A closed order
   is frozen; number, type, requester and `created_at` never change.
-- `order_items`: name and unit come from `sm_catalog` for **material_order**
-  (an unknown item is refused). **spool_order** items are physical spools
-  counted by piece, unrelated to the material's own km/kg unit - the catalog
-  is not consulted for them (for now): `unit` is always `"szt."`, `item_name`
-  is whatever the caller sent (e.g. the spool type, "1610"), only required to
-  be non-blank. Either type needs at least one item (checked at commit, so
-  order + items insert in one transaction).
+- `order_items`: both kinds are counted by piece - `unit` is always `"szt."`,
+  never `sm_catalog`'s own unit (km/kg/...), even for **material_order**.
+  **material_order** still requires the item to be real: `item_name` comes
+  from `sm_catalog`, an unknown item number is refused. **spool_order** items
+  are physical spools, which the catalog has no notion of - not consulted at
+  all (for now); `item_name` is whatever the caller sent (e.g. the spool
+  type, "1610"), only required to be non-blank. Either type needs at least
+  one item (checked at commit, so order + items insert in one transaction).
+- `line_material_rules` (`line_name`, `item_no`, `note`, unique per pair): a
+  standing instruction for one material on one line - e.g. line SH02 needs
+  Glass Yarn/600tex issued as short lengths first. `line_name` must be a real
+  production line (`locations.is_line`). Same shape and same "who maintains
+  it" open question as the planned `material_mapping` (see roadmap) - both
+  are small, manually-kept reference tables, not derived from anything.
+  `order_items_with_notes` (a view) joins this onto `order_items` via the
+  parent order's `to_location`, live - an edited/added rule applies to every
+  matching order immediately, including ones already placed, not just new
+  ones. `rule_note` is `NULL` for the ordinary case (nothing special about
+  that item on that line).
 - `client_order_no` (optional): the company's own client order - what a
   customer ordered (e.g. fibre-optic products), separate from `order_no`
   (ours, generated) and from `details->>'production_order_no'`

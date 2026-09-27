@@ -98,7 +98,7 @@ try {
   await client.query("INSERT INTO order_items (order_id, item_no, item_name, quantity, unit) VALUES ($1, $2, 'zla nazwa', 5, 'zla')", [mat.id, cat[0].item_no]);
   await client.query("SET CONSTRAINTS orders_require_items IMMEDIATE");
   const { rows: items } = await client.query("SELECT * FROM order_items WHERE order_id = $1", [mat.id]);
-  check("item name/unit filled from catalog", items[0].item_name === cat[0].item_name && items[0].unit === cat[0].unit, `${items[0].item_name} / ${items[0].unit}`);
+  check("item name filled from catalog, unit forced to szt. (not the catalog's own)", items[0].item_name === cat[0].item_name && items[0].unit === "szt.", `${items[0].item_name} / ${items[0].unit}`);
   await fails("unknown item refused", () => client.query("INSERT INTO order_items (order_id, item_no, quantity) VALUES ($1, '000', 1)", [mat.id]), "Nieznany item");
   await fails("items only on material orders", () => client.query("INSERT INTO order_items (order_id, item_no, quantity) VALUES ($1, $2, 1)", [water.id, cat[0].item_no]), "tylko do zamówienia materiału lub szpul");
 
@@ -124,6 +124,25 @@ try {
   await client.query("UPDATE orders SET client_order_no = 'KL-2026-0042' WHERE id = $1", [withClientRef.id]);
   const { rows: refRow } = await client.query("SELECT client_order_no FROM orders WHERE id = $1", [withClientRef.id]);
   check("client_order_no stored independently of order_no", refRow[0].client_order_no === "KL-2026-0042" && withClientRef.order_no !== "KL-2026-0042", refRow[0].client_order_no);
+
+  // --- line_material_rules: a standing "issue short lengths first" style note ---
+  await fails("rule refused on a non-line place", () => client.query("INSERT INTO line_material_rules (line_name, item_no, note) VALUES ('Hala magazynowa 2', $1, 'x')", [cat[0].item_no]), "nie jest linią produkcyjną");
+  await client.query("INSERT INTO line_material_rules (line_name, item_no, note) VALUES ('SH02', $1, 'Krótkie odcinki - wydawaj w pierwszej kolejności')", [cat[0].item_no]);
+  const ruled = (await insert("material_order", { to_location: "SH02", details: { production_order_no: "ZP-2" } })).rows[0];
+  await client.query("INSERT INTO order_items (order_id, item_no, quantity) VALUES ($1, $2, 4)", [ruled.id, cat[0].item_no]);
+  const unruled = (await insert("material_order", { to_location: "SH03", details: { production_order_no: "ZP-3" } })).rows[0];
+  await client.query("INSERT INTO order_items (order_id, item_no, quantity) VALUES ($1, $2, 4)", [unruled.id, cat[0].item_no]);
+  await client.query("SET CONSTRAINTS orders_require_items IMMEDIATE");
+  const { rows: notes } = await client.query(
+    "SELECT order_id, rule_note FROM order_items_with_notes WHERE order_id = ANY($1) ORDER BY order_id",
+    [[ruled.id, unruled.id]]
+  );
+  check(
+    "order_items_with_notes: same item shows the note only on the line the rule is for",
+    notes.find((n) => n.order_id === ruled.id)?.rule_note?.startsWith("Krótkie odcinki") && notes.find((n) => n.order_id === unruled.id)?.rule_note === null,
+    JSON.stringify(notes)
+  );
+  await client.query("SET CONSTRAINTS orders_require_items DEFERRED");
 
   // --- status flow ---
   await fails("done needs completed_by", () => client.query("UPDATE orders SET status = 'done' WHERE id = $1", [water.id]), "orders_status_fields");
