@@ -5,3 +5,6 @@
 !.env.example
 
 npm-debug.log*
+
+# unexpected server errors, see src/errorHandler.js
+/logs

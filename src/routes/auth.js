@@ -116,6 +116,13 @@ function loginToOldApp({ username, password, randomStr, code }) {
 	});
 }
 
+// What CIP says this person may do: the names in user_info.authorities (each
+// entry is { authority: "..." }). Passed to the clients, which decide what to
+// show - e.g. smpda hides a module its user has no access to.
+function authoritiesOf(data) {
+	return (data.user_info?.authorities ?? []).map((entry) => (typeof entry === "string" ? entry : entry?.authority)).filter(Boolean);
+}
+
 router.post("/login", loginLimiter, async (req, res) => {
 	if (SKIP_CIP_AUTH) {
 		const username = String(req.body?.username ?? "").trim();
@@ -129,6 +136,7 @@ router.post("/login", loginLimiter, async (req, res) => {
 			expiresIn: data.expires_in,
 			userId: data.user_info.username,
 			name: data.user_info.employee,
+			authorities: [],
 		});
 	}
 	try {
@@ -139,6 +147,7 @@ router.post("/login", loginLimiter, async (req, res) => {
 			expiresIn: data.expires_in,
 			userId: data.user_info?.username ?? req.body?.username,
 			name: data.user_info?.employee ?? req.body?.username,
+			authorities: authoritiesOf(data),
 		});
 	} catch (err) {
 		res.status(401).json({ error: err.message || "Nieprawidłowy login lub hasło", code: err.code || "invalid_credentials" });
@@ -219,6 +228,7 @@ router.post("/refresh", loginLimiter, async (req, res) => {
 			expiresIn: data.expires_in,
 			userId: data.user_info.username,
 			name: data.user_info.employee,
+			authorities: [],
 		});
 	}
 	try {
@@ -231,6 +241,7 @@ router.post("/refresh", loginLimiter, async (req, res) => {
 			expiresIn: data.expires_in,
 			userId: data.user_info?.username,
 			name: data.user_info?.employee,
+			authorities: authoritiesOf(data),
 		});
 	} catch (err) {
 		res.status(401).json({ error: err.message || "Nie udało się odświeżyć sesji.", code: err.code || "session_expired" });
