@@ -167,10 +167,18 @@ Tables: `locations` (places; SH01-07, ST01-13, FC01-03, FL01 are the fixed produ
   `new`/`in_progress` -> `cancelled`. Timestamps are filled by the trigger,
   `taken_by`/`completed_by` ("Zrealizował") must be supplied. A closed order
   is frozen; number, type, requester and `created_at` never change.
-- `order_items` (material and spool orders): name and unit come from `sm_catalog`
-  whatever is sent; an item the catalog does not know is refused. A material
-  or spool order needs at least one item (checked at commit, so order + items insert in
-  one transaction).
+- `order_items`: name and unit come from `sm_catalog` for **material_order**
+  (an unknown item is refused). **spool_order** items are physical spools
+  counted by piece, unrelated to the material's own km/kg unit - the catalog
+  is not consulted for them (for now): `unit` is always `"szt."`, `item_name`
+  is whatever the caller sent (e.g. the spool type, "1610"), only required to
+  be non-blank. Either type needs at least one item (checked at commit, so
+  order + items insert in one transaction).
+- `client_order_no` (optional): the company's own client order - what a
+  customer ordered (e.g. fibre-optic products), separate from `order_no`
+  (ours, generated) and from `details->>'production_order_no'`
+  (material_order's own, used to query CIP - see roadmap). Not yet scoped to
+  particular types.
 - Photos: the WPS form offers one optional photo for `goods_transport`, `waste_removal` and
   `warehouse_return` (demo: browser-only blob URL, no upload yet).
 - `order_photos` holds only a `storage_key` - where files live (server disk

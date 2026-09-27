@@ -108,11 +108,22 @@ try {
   await fails("spool order without items refused", () => insert("spool_order", { to_location: "SH04" }), "co najmniej jedną pozycję");
   await client.query("SET CONSTRAINTS orders_require_items DEFERRED");
   const spool = (await insert("spool_order", { to_location: "SH04" })).rows[0];
-  await client.query("INSERT INTO order_items (order_id, item_no, quantity) VALUES ($1, $2, 3)", [spool.id, cat[1].item_no]);
+  // "1610" is not an sm_catalog item number - proves the catalog isn't
+  // consulted for spool orders (unlike material orders, which would refuse
+  // an unknown one).
+  await client.query("INSERT INTO order_items (order_id, item_no, item_name, quantity) VALUES ($1, '1610', 'Szpula 1610', 10)", [spool.id]);
   await client.query("SET CONSTRAINTS orders_require_items IMMEDIATE");
   const { rows: spoolItems } = await client.query("SELECT * FROM order_items WHERE order_id = $1", [spool.id]);
-  check("spool order accepts items (name/unit from catalog)", spoolItems.length === 1 && spoolItems[0].unit === cat[1].unit, spoolItems[0]?.item_name);
+  check("spool order item: unit forced to szt., name kept as sent (no catalog lookup)", spoolItems.length === 1 && spoolItems[0].unit === "szt." && spoolItems[0].item_name === "Szpula 1610", JSON.stringify(spoolItems[0]));
+  await fails("spool order item needs a name", () => client.query("INSERT INTO order_items (order_id, item_no, quantity) VALUES ($1, '1611', 5)", [spool.id]), "nazwę/typ szpuli");
   await client.query("SET CONSTRAINTS orders_require_items DEFERRED");
+
+  // --- client_order_no: a separate, optional field from order_no (ours) and
+  // details->>'production_order_no' (material_order's own, for CIP) ---
+  const withClientRef = (await insert("waste_removal", { from_location: "SH05" })).rows[0];
+  await client.query("UPDATE orders SET client_order_no = 'KL-2026-0042' WHERE id = $1", [withClientRef.id]);
+  const { rows: refRow } = await client.query("SELECT client_order_no FROM orders WHERE id = $1", [withClientRef.id]);
+  check("client_order_no stored independently of order_no", refRow[0].client_order_no === "KL-2026-0042" && withClientRef.order_no !== "KL-2026-0042", refRow[0].client_order_no);
 
   // --- status flow ---
   await fails("done needs completed_by", () => client.query("UPDATE orders SET status = 'done' WHERE id = $1", [water.id]), "orders_status_fields");

@@ -93,6 +93,13 @@ CREATE TABLE IF NOT EXISTS orders (
   shift_date    DATE NOT NULL,                      -- day that shift started (trigger)
   from_location TEXT REFERENCES locations (name),   -- where to pick up
   to_location   TEXT REFERENCES locations (name),   -- where to deliver
+  -- The company's own client order (what fiber-optic products a customer
+  -- ordered, e.g. from an ERP) - a separate thing from order_no above (our
+  -- own generated code) and from details->>'production_order_no' below (the
+  -- production order material_order queries CIP with). Optional, not tied to
+  -- a particular type yet - scope this down once it's clearer which types
+  -- actually carry one.
+  client_order_no TEXT,
   note          TEXT NOT NULL DEFAULT '',
   -- Type-specific fields: {"water": "clean"|"dirty"} for water_refill,
   -- {"production_order_no": "..."} for material_order. Kept loose on purpose -
@@ -257,20 +264,41 @@ CREATE CONSTRAINT TRIGGER orders_require_items AFTER INSERT ON orders
   DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE PROCEDURE orders_require_items();
 
--- Items: only on material and spool orders, name/unit taken from the catalog.
+-- Items: only on material and spool orders - the two kinds mean different
+-- things and are validated differently.
+--   material_order: a real material (km/kg/EA of it, per sm_catalog) -
+--     name/unit always come from the catalog, never what the caller sent;
+--     an item number the catalog doesn't know is refused outright.
+--   spool_order: empty/new physical spools themselves, counted by piece -
+--     unrelated to whatever unit the material later wound onto one is sold
+--     in, so sm_catalog isn't consulted here (for now, per that decision -
+--     revisit if spool types end up wanting their own reference list). unit
+--     is always "szt."; item_name is whatever the caller sent (e.g. the
+--     spool type, "1610"), just required to be non-blank since nothing else
+--     backstops it.
 CREATE OR REPLACE FUNCTION order_items_before_write() RETURNS trigger AS $$
 DECLARE
+  order_type TEXT;
   c RECORD;
 BEGIN
-  IF (SELECT type FROM orders WHERE id = NEW.order_id) NOT IN ('material_order', 'spool_order') THEN
+  SELECT type INTO order_type FROM orders WHERE id = NEW.order_id;
+  IF order_type NOT IN ('material_order', 'spool_order') THEN
     RAISE EXCEPTION 'Pozycje można dodać tylko do zamówienia materiału lub szpul.';
   END IF;
-  SELECT item_name, unit INTO c FROM sm_catalog WHERE item_no = NEW.item_no;
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'Nieznany item % - nie ma go w katalogu materiałów.', NEW.item_no;
+
+  IF order_type = 'material_order' THEN
+    SELECT item_name, unit INTO c FROM sm_catalog WHERE item_no = NEW.item_no;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'Nieznany item % - nie ma go w katalogu materiałów.', NEW.item_no;
+    END IF;
+    NEW.item_name := c.item_name;
+    NEW.unit := c.unit;
+  ELSE
+    IF btrim(coalesce(NEW.item_name, '')) = '' THEN
+      RAISE EXCEPTION 'Podaj nazwę/typ szpuli.';
+    END IF;
+    NEW.unit := 'szt.';
   END IF;
-  NEW.item_name := c.item_name;
-  NEW.unit := c.unit;
   RETURN NEW;
 END $$ LANGUAGE plpgsql;
 
