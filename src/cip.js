@@ -160,6 +160,308 @@ async function findCipRowToIssue(itemNo, quantity, cipToken) {
   return sufficient[0].row;
 }
 
+// Order lookup ("Obsługa zamówień" prep - see AGENTS.md roadmap step 7 and
+// material_order's `production_order_no`): CIP's own order search and its
+// per-line bill of materials. Read-only, so unlike HANDLERS.* below this does
+// NOT go through pushToCip/CIP_SYNC - there's no local copy of this data to
+// fall back to, it only ever exists in CIP. Still needs the caller's own CIP
+// token (same as everything else in this file): CIP has no notion of a
+// service account here.
+
+// "Order process count" screen's own search - takes a full orderId
+// ("260010309034801(4)", order number + line in parens) directly, unlike
+// order/infor/page/search's loose orderNumber match, so this is an exact
+// lookup for one line. `workStatus: "4"` and `processRouteList: []` are
+// captured as-is from CIP's own UI request for this screen (meaning of "4"
+// not confirmed - narrow the filter or make it a parameter if a line in
+// another status ever needs to be found and isn't).
+const ORDER_SEARCH_PATH = "/cppms/orderProcessCount/page/search";
+// A different CIP screen's search - the one this file used before switching
+// to orderProcessCount above. Kept only as a fallback (see
+// resolveOrderIdsByFragment below): unlike orderProcessCount's `orderId`,
+// its own `orderInfor.orderNumber` does a loose "contains" match (confirmed
+// live: searching "9034801" matched full number "260010309034801"), which is
+// what makes searching by a fragment or just the ending of an order number
+// possible at all.
+const ORDER_RESOLVE_PATH = "/cppms/order/infor/page/search";
+const BOM_SEARCH_PATH = "/cppms/historical/bom/search/erpNumber";
+const ORDER_SEARCH_PAGE_SIZE = 100;
+
+// The order line(s) CIP has for `orderId`. Each returned row is one
+// production line of the order (its own erpNumber/orderId/orderSn). Paged
+// the same way findCipRows does for inventory in case more than one line
+// (or, for a bare order number with no "(n)", several lines) comes back.
+async function findCipOrderLines(orderId, cipToken) {
+  const lines = [];
+  let current = 1;
+  for (;;) {
+    const reply = await cipFetch(ORDER_SEARCH_PATH, cipToken, {
+      page: { current, size: ORDER_SEARCH_PAGE_SIZE },
+      orderProcessCountDto: {
+        processRouteList: [],
+        workStatus: "4",
+        orderId,
+        requestDateStart: "",
+        requestDateEnd: "",
+        dispatchTimeStart: "",
+        dispatchTimeEnd: "",
+      },
+    });
+    assertTokenAccepted(reply);
+    if (!reply.ok || reply.json?.code !== 0) {
+      throw new ApiError(reply.json?.msg || `Nie udało się wyszukać zamówienia w CIP (${reply.status}).`, 502);
+    }
+    const page = reply.json.data ?? {};
+    const pageRows = page.records ?? [];
+    lines.push(...pageRows);
+    if (pageRows.length < ORDER_SEARCH_PAGE_SIZE || current * ORDER_SEARCH_PAGE_SIZE >= (page.total ?? 0)) break;
+    current += 1;
+  }
+  return lines;
+}
+
+// Every distinct exact orderId ("260010309034801(4)") CIP's loose order
+// search turns up for `fragment` - a snippet or just the ending of an order
+// number, e.g. "9034801" for "260010309034801". Used only when
+// findCipOrderLines's own exact search (orderProcessCount) comes up empty
+// (see getCipOrderMaterials): this is purely a resolver, so each id it finds
+// still goes through findCipOrderLines again afterwards for the real,
+// consistent per-line data (segDescription, workStatus, ...) - order/infor's
+// own records carry a different/older field set, not reused directly here.
+async function resolveOrderIdsByFragment(fragment, cipToken) {
+  const ids = new Set();
+  let current = 1;
+  for (;;) {
+    const reply = await cipFetch(ORDER_RESOLVE_PATH, cipToken, {
+      page: { current, size: ORDER_SEARCH_PAGE_SIZE },
+      orderInfor: { orderNumber: fragment },
+      requestDateStart: "",
+      requestDateEnd: "",
+    });
+    assertTokenAccepted(reply);
+    if (!reply.ok || reply.json?.code !== 0) {
+      throw new ApiError(reply.json?.msg || `Nie udało się wyszukać zamówienia w CIP (${reply.status}).`, 502);
+    }
+    const page = reply.json.data ?? {};
+    const pageRows = page.records ?? [];
+    for (const row of pageRows) if (row.orderId) ids.add(row.orderId);
+    if (pageRows.length < ORDER_SEARCH_PAGE_SIZE || current * ORDER_SEARCH_PAGE_SIZE >= (page.total ?? 0)) break;
+    current += 1;
+  }
+  return [...ids];
+}
+
+// The materials (BOM) CIP has on file for one order line. Shape of `data` is
+// whatever CIP's own BOM screen shows - not reshaped here, just passed
+// through, since only the request (not a real response) was captured so far.
+async function findCipOrderBom({ erpNumber, orderId, orderSn }, cipToken) {
+  const reply = await cipFetch(BOM_SEARCH_PATH, cipToken, { erpNumber, orderId, orderSn });
+  assertTokenAccepted(reply);
+  if (!reply.ok || reply.json?.code !== 0) {
+    throw new ApiError(reply.json?.msg || `Nie udało się pobrać materiałów zamówienia z CIP (${reply.status}).`, 502);
+  }
+  return reply.json.data ?? null;
+}
+
+// CIP's own "historyEdit" screen - free-text process requirements per order
+// line (cable structure, print/marking instructions, test requirements,
+// packaging...), keyed by `orderSn` (the line's own, from findCipOrderLines
+// - not orderId). This is where a line's drum/spool size requirement lives,
+// e.g. "Rozmiar szpuli: W600A 600X400X340" - nowhere in the order/BOM data
+// above (confirmed live, captured from CIP's own order detail page).
+const HISTORY_EDIT_PATH = "/cppms/historical/historyEdit/search";
+
+async function findCipOrderProcessRequirements(orderSn, cipToken) {
+  if (orderSn == null) return null;
+  const reply = await cipFetch(HISTORY_EDIT_PATH, cipToken, { orderSn });
+  assertTokenAccepted(reply);
+  if (!reply.ok || reply.json?.code !== 0) {
+    throw new ApiError(reply.json?.msg || `Nie udało się pobrać wymagań procesowych zamówienia z CIP (${reply.status}).`, 502);
+  }
+  return reply.json.data ?? null;
+}
+
+// Which of the several free-text "opRequest*" fields (one per production
+// process stage - SH = sheath/oblew, SC = stranding/skręcanie, ...) carries
+// a "Rozmiar szpuli: ..." segment varies by order/cable type (confirmed
+// live: found under `opRequestSh` for one real order) - every one of them
+// is checked here, first match wins. Each field is CIP's own "/"-separated
+// list of free-text requirements, same style as `stDescription` elsewhere
+// in this file.
+const OP_REQUEST_FIELDS = ["opRequestSh", "opRequestSc", "opRequestTb", "opRequestDp", "opRequestTest", "opRequestCustomer"];
+const SPOOL_SIZE_LABEL_RE = /rozmiar\s+szpuli\s*:\s*(.+)/i;
+
+// A single order line can need more than one drum - a cable run split
+// across several physical reels, each its own size, e.g. "Rozmiar szpuli:
+// 4km: 1250B 1250*650*740 ; 2km: 1120B II 1120*650*740" (confirmed live) -
+// so every ";"-separated piece of the "Rozmiar szpuli:" text comes back as
+// its own array entry, not just the first/only one. A plain single-drum
+// line (no ";") is a one-element array. Each entry is still raw CIP text -
+// a drum/spool code plus its own dimensions, and here possibly a leading
+// "4km:"-style length label too, none of it split apart further here.
+// Matching a piece against an actual catalog item is routes/cipOrders.js's
+// job (it alone touches the database) - see that file's `matchDrumCatalog`
+// and `splitLengthLabel`.
+function extractSpoolSizeSegments(historyEditData) {
+  if (!historyEditData) return [];
+  for (const field of OP_REQUEST_FIELDS) {
+    const text = historyEditData[field];
+    if (!text) continue;
+    for (const segment of String(text).split("/")) {
+      const match = segment.trim().match(SPOOL_SIZE_LABEL_RE);
+      if (match) {
+        return match[1]
+          .split(";")
+          .map((piece) => piece.trim())
+          .filter(Boolean);
+      }
+    }
+  }
+  return [];
+}
+
+// A material substituted on this order - e.g. a discontinued reel of tape
+// swapped for a newer one - shows up here, not in the BOM itself (the BOM
+// just lists whichever item number is current). `orderId` is the exact
+// full form ("...(4)"): the query does accept a bare order number too, but
+// then mixes in every line's substitutions, which findCipOrderBom's
+// per-line matching below can't attribute correctly - so this is only ever
+// called with one line's own exact orderId.
+const MATERIAL_MAPPING_SEARCH_PATH = "/cms/material/mapping/page/query";
+const MATERIAL_MAPPING_PAGE_SIZE = 100;
+
+async function findCipMaterialMappings(orderId, cipToken) {
+  const mappings = [];
+  let current = 1;
+  for (;;) {
+    const reply = await cipFetch(MATERIAL_MAPPING_SEARCH_PATH, cipToken, {
+      page: { current, size: MATERIAL_MAPPING_PAGE_SIZE },
+      materialItemOriginal: "",
+      materialItem: "",
+      materialDescLong: "",
+      materialTypeCode: "",
+      materialTypeName: "",
+      orderId,
+      createBy: "",
+      createTime: [],
+      createTimeStart: "",
+      createTimeEnd: "",
+    });
+    assertTokenAccepted(reply);
+    if (!reply.ok || reply.json?.code !== 0) {
+      throw new ApiError(reply.json?.msg || `Nie udało się pobrać zamian materiałów z CIP (${reply.status}).`, 502);
+    }
+    const page = reply.json.data ?? {};
+    const pageRows = page.records ?? [];
+    mappings.push(...pageRows);
+    if (pageRows.length < MATERIAL_MAPPING_PAGE_SIZE || current * MATERIAL_MAPPING_PAGE_SIZE >= (page.total ?? 0)) break;
+    current += 1;
+  }
+  return mappings;
+}
+
+// Attaches each material mapping to the BOM row(s) it concerns - matched by
+// itemCode against either side of the mapping (materialItemOriginal or
+// materialItem), since it isn't confirmed here which one the BOM's own
+// itemCode reflects after a swap. A material with no matching mapping is
+// left untouched (no `materialChange` field at all, rather than null - so
+// callers can just check for its presence).
+function attachMaterialChanges(materials, mappings) {
+  if (!mappings.length) return materials;
+  return (materials ?? []).map((material) => {
+    const mapping = mappings.find(
+      (m) => m.materialItemOriginal === material.itemCode || m.materialItem === material.itemCode
+    );
+    if (!mapping) return material;
+    return {
+      ...material,
+      materialChange: {
+        from: mapping.materialItemOriginal,
+        to: mapping.materialItem,
+        desc: mapping.materialDesc,
+        changedAt: mapping.createTime,
+      },
+    };
+  });
+}
+
+// CIP's `orderId` is `orderNumber` plus "(lineNumber)", e.g.
+// "260010309034801(4)" for line 4 of order 260010309034801 - a bare order
+// number (no "(n)") is also accepted and, since findCipOrderLines's own
+// search isn't confirmed to be exact-only, is used as a safety net below:
+// with a full orderId, a result whose own `orderId` doesn't match exactly is
+// dropped instead of trusted blindly.
+function hasLineSuffix(orderId) {
+  return /\(\d+\)$/.test(String(orderId));
+}
+
+// Splits a trailing "(n)" off `orderId`, if it has one - e.g. "25501(1)"
+// (a fragment/ending of the number, but WITH a real line suffix already
+// attached) becomes { numberPart: "25501", lineSuffix: "(1)" }. Needed
+// because order/infor's own `orderNumber` field (the one the loose fragment
+// search in resolveOrderIdsByFragment below runs against) is purely
+// numeric - it never contains "(" ")" at all, so searching it for
+// "25501(1)" literally, parens included, finds nothing even though "25501"
+// alone would (confirmed live: this was exactly why that combination failed
+// while a full "...025501(1)" or a bare "25501" each worked on their own).
+function splitOrderIdFragment(orderId) {
+  const match = String(orderId).match(/^(.*?)(\(\d+\))$/);
+  return match ? { numberPart: match[1], lineSuffix: match[2] } : { numberPart: String(orderId), lineSuffix: null };
+}
+
+// The order line(s) matching `orderId`, each with its materials attached
+// (see findCipOrderBom) and any material substitution CIP has on file for
+// that exact line (see findCipMaterialMappings/attachMaterialChanges) -
+// materials involved carry their own `materialChange`, and the line also
+// keeps the raw list as `materialMappings` (rarely needed on its own, but
+// kept rather than dropped, e.g. a mapping whose item isn't in this BOM at
+// all). Throws ApiError (404) if CIP has nothing under that orderId at all.
+export async function getCipOrderMaterials(orderId, cipToken) {
+  const allLines = await findCipOrderLines(orderId, cipToken);
+  let lines = hasLineSuffix(orderId) ? allLines.filter((line) => line.orderId === orderId) : allLines;
+
+  // orderProcessCount only matches a full, exact orderId - a fragment or just
+  // the ending of one finds nothing there (confirmed live). Retried through
+  // order/infor's loose search purely to resolve which exact orderId(s) that
+  // fragment means (see resolveOrderIdsByFragment) - each is then looked up
+  // again the normal way, so a fragment match returns the exact same shape a
+  // typed-in-full orderId would. Only the numeric part of the fragment is
+  // searched (see splitOrderIdFragment) - a fragment that already carries
+  // its own real "(n)" (e.g. "25501(1)") narrows the resolved candidates
+  // back down to that one line afterwards instead of passing the "(n)" into
+  // the search itself, where it could never match anything.
+  if (!lines.length) {
+    const { numberPart, lineSuffix } = splitOrderIdFragment(orderId);
+    const resolvedIds = (await resolveOrderIdsByFragment(numberPart, cipToken)).filter(
+      (id) => !lineSuffix || id.endsWith(lineSuffix)
+    );
+    const resolvedLines = await Promise.all(resolvedIds.map((id) => findCipOrderLines(id, cipToken)));
+    lines = resolvedLines.flat().filter((line) => resolvedIds.includes(line.orderId));
+  }
+
+  if (!lines.length) throw new ApiError(`Nie znaleziono zamówienia ${orderId} w CIP.`, 404);
+  return Promise.all(
+    lines.map(async (line) => {
+      const [materials, materialMappings, processRequirements] = await Promise.all([
+        findCipOrderBom(line, cipToken),
+        findCipMaterialMappings(line.orderId, cipToken),
+        findCipOrderProcessRequirements(line.orderSn, cipToken),
+      ]);
+      return {
+        ...line,
+        materials: attachMaterialChanges(materials, materialMappings),
+        materialMappings,
+        // Raw text pieces, e.g. ["W600A 600X400X340"] or ["4km: 1250B
+        // 1250*650*740", "2km: 1120B II 1120*650*740"] - each matched
+        // against the actual drum catalog in routes/cipOrders.js (needs the
+        // database, which this file never touches - see matchDrumCatalog
+        // there).
+        spoolSizeSegments: extractSpoolSizeSegments(processRequirements),
+      };
+    })
+  );
+}
+
 // One entry per operation kind that has a CIP counterpart:
 //   name: async (payload, cipToken) => details object  (throws ApiError when CIP refuses)
 // Filled in as the CIP requests are captured - e.g. "issue" and "receipt".

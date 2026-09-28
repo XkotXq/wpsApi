@@ -36,6 +36,43 @@ export async function listSmCatalog() {
   return rows.map(rowToApi);
 }
 
+// Which of `itemNos` (e.g. CIP BOM materials' own `itemCode` - same numbering
+// as sm_catalog's item_no, confirmed against real data) are actual "Materiały
+// SM" items - used by GET /cip-orders/:orderId/materials/warehouse to keep
+// only the CIP order materials this warehouse actually stocks. A single
+// query rather than one lookup per item.
+export async function knownSmItemNos(itemNos) {
+  const wanted = [...new Set(itemNos.map((v) => String(v ?? "").trim()).filter(Boolean))];
+  if (!wanted.length) return new Set();
+  const { rows } = await pool.query("SELECT item_no FROM sm_catalog WHERE item_no = ANY($1::text[])", [wanted]);
+  return new Set(rows.map((r) => r.item_no));
+}
+
+// item_no -> item_name for whichever of `itemNos` the catalog knows - same
+// "catalog is the authority for a material's name" rule this file's own doc
+// comment states, applied to CIP order materials (POST /cip-orders/materials):
+// a material CIP shows under some CIP-side description gets the catalog's
+// own name instead when it has one, and only falls back to CIP's own text
+// for an item the catalog doesn't have at all (see routes/cipOrders.js).
+export async function smItemNames(itemNos) {
+  const wanted = [...new Set(itemNos.map((v) => String(v ?? "").trim()).filter(Boolean))];
+  if (!wanted.length) return new Map();
+  const { rows } = await pool.query("SELECT item_no, item_name FROM sm_catalog WHERE item_no = ANY($1::text[])", [
+    wanted,
+  ]);
+  return new Map(rows.map((r) => [r.item_no, r.item_name]));
+}
+
+// Every catalog item under the "Drum" category (wooden/cardboard reels,
+// e.g. "Wooden drum W600A", "Wooden drum W1250B II") - used to match CIP's
+// own free-text drum/spool size requirement for an order against a real
+// catalog item (see routes/cipOrders.js's `matchDrumCatalog`; the CIP text
+// itself comes from cip.js's `extractSpoolSizeText`).
+export async function drumCatalogEntries() {
+  const { rows } = await pool.query("SELECT item_no, item_name, unit FROM sm_catalog WHERE category = 'Drum'");
+  return rows.map((r) => ({ itemNo: r.item_no, itemName: r.item_name, unit: r.unit }));
+}
+
 // One entry, straight from the database - for a caller that needs this
 // item's current category/individualUnits right now (e.g. wps's
 // ReceiveUnitPanel resolving what to receive) rather than whatever a

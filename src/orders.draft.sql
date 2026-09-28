@@ -17,19 +17,12 @@
 -- orders_before_insert). One shared list, not per user. Suggestions for a field:
 --   SELECT name FROM locations WHERE name ILIKE '%' || $typed || '%'
 --   ORDER BY is_line DESC, name LIMIT 8;
-CREATE TABLE IF NOT EXISTS locations (
-  name       TEXT PRIMARY KEY CHECK (btrim(name) <> ''),
-  is_line    BOOLEAN NOT NULL DEFAULT false,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
--- "sh01" must not become a second place next to "SH01".
-CREATE UNIQUE INDEX IF NOT EXISTS locations_lower_name_idx ON locations (lower(name));
-INSERT INTO locations (name, is_line)
-  SELECT 'SH' || lpad(g::text, 2, '0'), true FROM generate_series(1, 7) g
-  UNION ALL SELECT 'ST' || lpad(g::text, 2, '0'), true FROM generate_series(1, 13) g
-  UNION ALL SELECT 'FC' || lpad(g::text, 2, '0'), true FROM generate_series(1, 3) g
-  UNION ALL SELECT 'FL01', true
-ON CONFLICT DO NOTHING;
+-- `locations` itself now lives for real in src/schema.sql (promoted early,
+-- ahead of the rest of this module, so "Wytyczne do transportów"'s
+-- line_material_rules - also in schema.sql now - has a real table of
+-- production lines to reference) - not redefined here to avoid two
+-- definitions drifting apart. Everything else below in this file (orders,
+-- order_items, ...) still expects it to exist, same as before.
 
 -- The known spelling of a typed place (any capitals), or the trimmed text itself
 -- when it is new; NULL for blank.
@@ -305,40 +298,11 @@ CREATE TRIGGER order_items_before_write BEFORE INSERT OR UPDATE ON order_items
   FOR EACH ROW EXECUTE PROCEDURE order_items_before_write();
 
 -- --------------------------------------------------------- material rules
--- A standing instruction for one (line, material) pair - e.g. "line SH02
--- needs Glass Yarn/600tex (997019...0001) issued as short lengths first".
--- Same shape as the planned material_mapping (production_order_no,
--- old_item_no, new_item_no): a small, manually-maintained reference table,
--- not derived from anything. Who edits it (a WPS screen, same idea as the
--- sm_catalog editor) is still open - see AGENTS.md.
---
--- One row per (line, item); item_no is deliberately NOT a whole category
--- (sm_catalog's own grouping) - real data shows the relevant distinction
--- (e.g. 600tex vs 1200tex Glass Yarn) lives inside one category as separate
--- item numbers, not as a category of its own, so a category-wide rule would
--- either miss the 600tex item or wrongly also catch the 1200tex one.
-CREATE TABLE IF NOT EXISTS line_material_rules (
-  id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  line_name  TEXT NOT NULL REFERENCES locations (name),
-  item_no    TEXT NOT NULL,
-  note       TEXT NOT NULL CHECK (btrim(note) <> ''),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (line_name, item_no)
-);
-
--- A rule only makes sense against a real production line, not a
--- goods_transport-registered place.
-CREATE OR REPLACE FUNCTION line_material_rules_before_write() RETURNS trigger AS $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM locations WHERE name = NEW.line_name AND is_line) THEN
-    RAISE EXCEPTION '% nie jest linią produkcyjną.', NEW.line_name;
-  END IF;
-  RETURN NEW;
-END $$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS line_material_rules_before_write ON line_material_rules;
-CREATE TRIGGER line_material_rules_before_write BEFORE INSERT OR UPDATE ON line_material_rules
-  FOR EACH ROW EXECUTE PROCEDURE line_material_rules_before_write();
+-- `line_material_rules` itself now lives for real in src/schema.sql
+-- (promoted early, with `locations` - see that file, and wps's
+-- "Wytyczne do transportów" / src/lineMaterialRules.js) - not redefined
+-- here. Only the view below, which needs the still-draft `orders`/
+-- `order_items` tables above, stays in this file.
 
 -- order_items with the standing instruction attached, when the order's own
 -- to_location (material_order/spool_order only ever deliver, never pick up)

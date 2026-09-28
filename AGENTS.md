@@ -56,6 +56,84 @@ spool operation goes to CIP as just item + quantity.
   for the same item is refused (see the per-row-wins-or-nothing rule above),
   not split across rows.
 
+## Order lookup (`src/cip.js`'s `getCipOrderMaterials`, `routes/cipOrders.js`)
+`POST /cip-orders` (+ `/materials`, `/materials/warehouse`), body `{ orderId }`,
+looks up a CIP production order's bill of materials - for wps's "Zamówienia"
+tab (`OrderMaterialsSearch.js`) and "Zamówienie materiału"'s own material
+picker (`OrdersCipListTable.js`), checking what a production order needs
+before/while it's run. POST rather than GET with `orderId` in the URL: it can
+contain `(` `)` (a full orderId) and, since a fragment is also accepted (see
+below), potentially other odd substrings too - a JSON body sidesteps
+URL-encoding all of that correctly at every call site. A GET, or any path
+under `/cip-orders` these three routes don't define, is refused by name
+rather than falling through to the generic `/:material` catch-all further
+down `app.js` (see that guard's own comment - this exact fall-through was
+seen live from Postman when these were still GET routes).
+Read-only and always live against CIP, regardless of `CIP_SYNC` (see that
+constant's own doc comment) - there's no local copy of this data to fall
+back to. `orderId` is CIP's own `orderNumber` + "(lineNumber)", e.g.
+`260010309034801(4)`; a bare order number (no `(n)`) returns every matching
+production line instead of one, and a fragment or just the ending of one
+(e.g. `9034801`) is resolved too - see `resolveOrderIdsByFragment`: CIP's
+`orderProcessCount` search (the main lookup, exact-only) is retried through
+a different, looser CIP search purely to resolve which exact orderId(s) a
+fragment means, each then looked up again the normal way so the response
+shape never differs by which path found it.
+- `/materials` returns just `{ orderId, materials }` (or an array of those,
+  one per line, for a bare order number/fragment - see the route's own comment).
+  `/materials/warehouse` is the same, filtered to materials this warehouse
+  actually stocks (`sm_catalog.item_no` - `smCatalog.js`'s `knownSmItemNos`);
+  a BOM lists everything the order needs, most of it (fibre, masterbatch...)
+  from other warehouses/processes.
+- **Names** (`withCatalogNames` in `routes/cipOrders.js`): every material's
+  `name` (and, for a changed one, `materialChange.fromName`/`toName`) is
+  resolved catalog-first (`sm_catalog.item_name`, via `smCatalog.js`'s
+  `smItemNames`), CIP's own `descriptionUs`/`descriptionZhs`/mapping
+  `materialDesc` only as the fallback for an item the catalog doesn't know -
+  same rule this file's "The catalog names a material" section already
+  documents for what wpsApi writes, extended here to what it shows from CIP's
+  own order/BOM data too. Skipping this and using CIP's raw description
+  directly showed Chinese text for at least one real item whose
+  `descriptionUs` was blank.
+- **Material changes**: a material can be substituted after the order was
+  planned (e.g. a discontinued tape swapped for its replacement) - the BOM
+  itself doesn't show this, CIP's `/cms/material/mapping/page/query` does
+  (`findCipMaterialMappings`). `getCipOrderMaterials` attaches it to the BOM
+  row it concerns as `materialChange: { from, to, desc, changedAt }`, matched
+  by `itemCode` against either side of the mapping (confirmed live: the
+  BOM's `itemCode` is the *original*, pre-swap item - `from` - not the
+  replacement). The line also keeps the raw list as `materialMappings`, for
+  a mapping whose item isn't in this BOM at all.
+- **Drum/spool size**: which drum(s) an order's cable ships on is free text
+  CIP keeps per order line, nowhere in the order/BOM data above - CIP's own
+  "historyEdit" screen (`POST /cppms/historical/historyEdit/search`, body
+  `{ orderSn }`) has it, under one of several `opRequest*` fields (SH/SC/
+  TB/DP/Test/Customer - which one varies by order/cable type, all are
+  checked - confirmed live: found under `opRequestSh`), as a
+  "Rozmiar szpuli: ..."-style segment in that field's own "/"-separated free
+  text (`cip.js`'s `findCipOrderProcessRequirements` +
+  `extractSpoolSizeSegments`, run per line alongside the BOM/mapping fetches
+  - `line.spoolSizeSegments`). A line can need more than one drum - a cable
+  run split across several reels, e.g. "Rozmiar szpuli: 4km: 1250B
+  1250*650*740 ; 2km: 1120B II 1120*650*740" (confirmed live) - so that
+  text is itself split on ";" into one segment per drum, each optionally
+  carrying its own leading length label ("4km:") split off by
+  `routes/cipOrders.js`'s `splitLengthLabel` before matching.
+  `matchDrumCatalog` matches a segment's code (before its own dimensions,
+  e.g. "W600A") against `sm_catalog`'s own "Drum" category
+  (`smCatalog.js`'s `drumCatalogEntries`) by longest trailing-word match
+  (handles a "II"/"III" variant suffix, e.g. "Wooden drum W1250B II" over
+  the shorter "Wooden drum W1250B", and a missing leading "W" - both
+  confirmed live - see that function's own comment), falling back to a
+  fuzzy search (`fuse.js`, `fuzzyMatchDrumCatalog`) for anything that
+  matches neither way. `withDrumMaterial` then appends every matched
+  segment as its own `materials` entry (a segment's length label, if it had
+  one, appended onto its name - `isDrumRequirement: true`, `qty`/
+  `requiredQuantity` left unset - the free text never says how many of each
+  drum) - each a real "Materiały SM" catalog item by construction, so they
+  survive `/materials/warehouse`'s own filter with no special-casing
+  needed.
+
 ## Data model
 Generic CRUD (`src/items.js`: `listItems`/`createItem`/`updateItem`/
 `deleteItem`/`reorderItems`/`transferItem`) driven by per-material field

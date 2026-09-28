@@ -262,3 +262,56 @@ CREATE TABLE IF NOT EXISTS sm_settings (
   value       JSONB NOT NULL,
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Places a transport order can go to/come from - pulled in early from the
+-- still-draft transport-orders module (src/orders.draft.sql) because
+-- line_material_rules below needs a real table of production lines to
+-- reference; the rest of that module (orders/order_items/...) stays draft.
+-- The production lines are fixed (is_line); a future goods_transport
+-- order's free-text "skąd"/"dokąd" would register any other place here too
+-- (not built yet - see orders.draft.sql).
+CREATE TABLE IF NOT EXISTS locations (
+  name       TEXT PRIMARY KEY CHECK (btrim(name) <> ''),
+  is_line    BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- "sh01" must not become a second place next to "SH01".
+CREATE UNIQUE INDEX IF NOT EXISTS locations_lower_name_idx ON locations (lower(name));
+INSERT INTO locations (name, is_line)
+  SELECT 'SH' || lpad(g::text, 2, '0'), true FROM generate_series(1, 7) g
+  UNION ALL SELECT 'ST' || lpad(g::text, 2, '0'), true FROM generate_series(1, 13) g
+  UNION ALL SELECT 'FC' || lpad(g::text, 2, '0'), true FROM generate_series(1, 3) g
+  UNION ALL SELECT 'FL01', true
+ON CONFLICT DO NOTHING;
+
+-- "Wytyczne do transportów" (wps nav): a standing instruction for one
+-- material on one production line - e.g. line SH02 needs Glass Yarn/600tex
+-- delivered as short lengths first. One row per (line, item); item_no is
+-- deliberately NOT a whole sm_catalog category - real data shows the
+-- relevant distinction (e.g. 600tex vs 1200tex Glass Yarn) lives inside one
+-- category as separate item numbers, not as a category of its own, so a
+-- category-wide rule would either miss the 600tex item or wrongly also
+-- catch the 1200tex one. A small, manually-maintained reference table, not
+-- derived from anything - see src/lineMaterialRules.js.
+CREATE TABLE IF NOT EXISTS line_material_rules (
+  id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  line_name  TEXT NOT NULL REFERENCES locations (name),
+  item_no    TEXT NOT NULL,
+  note       TEXT NOT NULL CHECK (btrim(note) <> ''),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (line_name, item_no)
+);
+
+-- A rule only makes sense against a real production line, not some other
+-- registered place.
+CREATE OR REPLACE FUNCTION line_material_rules_before_write() RETURNS trigger AS $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM locations WHERE name = NEW.line_name AND is_line) THEN
+    RAISE EXCEPTION '% nie jest linią produkcyjną.', NEW.line_name;
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS line_material_rules_before_write ON line_material_rules;
+CREATE TRIGGER line_material_rules_before_write BEFORE INSERT OR UPDATE ON line_material_rules
+  FOR EACH ROW EXECUTE PROCEDURE line_material_rules_before_write();

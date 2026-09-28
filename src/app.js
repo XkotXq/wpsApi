@@ -6,6 +6,8 @@ import { errorHandler } from "./errorHandler.js";
 import authRouter from "./routes/auth.js";
 import catalogRouter from "./routes/catalog.js";
 import checksRouter from "./routes/checks.js";
+import cipOrdersRouter from "./routes/cipOrders.js";
+import lineMaterialRulesRouter from "./routes/lineMaterialRules.js";
 import locksRouter from "./routes/locks.js";
 import stocksRouter from "./routes/stocks.js";
 import itemsRouter from "./routes/items.js";
@@ -28,6 +30,8 @@ api.use("/auth", authRouter);
 api.use(requireAuth);
 
 api.use("/catalog", catalogRouter);
+api.use("/cip-orders", cipOrdersRouter);
+api.use("/line-material-rules", lineMaterialRulesRouter);
 api.use("/checks/:material", loadMaterial, checksRouter);
 api.use("/locks/:material", loadMaterial, locksRouter);
 api.use("/stocks", stocksRouter);
