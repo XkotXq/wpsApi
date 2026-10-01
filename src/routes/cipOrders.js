@@ -17,24 +17,53 @@ function cipDesc(m) {
 // catalog-first, CIP text second - same rule wpsApi already applies to what
 // it writes (`catalogItemName`, see AGENTS.md's "The catalog names a
 // material"), extended here to what it shows from CIP's own order/BOM data
-// too. `name` is this row's current identity (the changed-to item, when
-// there is one); `materialChange.fromName`/`toName` are only added for a row
-// that has a `materialChange`, so the client never has to duplicate this
-// fallback logic itself.
-async function withCatalogNames(lines) {
+// too. `materialChange.fromName`/`toName` are only added for a row that has
+// a `materialChange`, so the client never has to duplicate this fallback
+// logic itself.
+//
+// A substituted material is also **normalized to the item it was changed
+// to**: both `itemCode` and `name` are the material actually to be used
+// now, i.e. what CIP's BOM would say if it were re-planned today. The BOM
+// itself still carries the original, pre-swap `itemCode` (see cip.js's
+// attachMaterialChanges) - leaving that through was a real bug: `name`
+// already followed the swap here while `itemCode` did not, so a row read
+// as the new material's name next to the old material's number, and
+// anything taking the number straight off the row ordered the wrong item
+// (OrdersCipListTable.js's own "Zamówienie materiału" picker did exactly
+// that). The original is not lost - it stays as
+// `materialChange.from`/`fromName`, which is what the "Zamówienia" search
+// tab shows in its expanded change rows.
+// Exported for scripts/check-cip-material-change.mjs - the normalization
+// below has had two real bugs (CIP's raw Chinese text leaking past the
+// catalog, and the stale pre-swap itemCode), and it is pure apart from the
+// catalog lookup, so it is worth being able to exercise directly.
+export async function withCatalogNames(lines) {
+  // Both sides of a change are looked up, not just the row's own itemCode -
+  // `from` is normally that same code, but not when the BOM already carried
+  // the changed-to side, and `fromName` must still resolve then.
   const codes = lines.flatMap((line) =>
-    (line.materials ?? []).flatMap((m) => [m.itemCode, m.materialChange?.to]).filter(Boolean)
+    (line.materials ?? [])
+      .flatMap((m) => [m.itemCode, m.materialChange?.from, m.materialChange?.to])
+      .filter(Boolean)
   );
   const catalogNames = await smItemNames(codes);
   return lines.map((line) => ({
     ...line,
     materials: (line.materials ?? []).map((m) => {
+      // `?? m.itemCode` also covers a row whose own itemCode is already the
+      // changed-to side (attachMaterialChanges matches either side, since
+      // which one CIP's BOM reflects after a swap isn't confirmed) - then
+      // this is a no-op rather than a second swap.
       const currentCode = m.materialChange?.to ?? m.itemCode;
-      const material = { ...m, name: catalogNames.get(currentCode) ?? (m.materialChange?.desc || cipDesc(m)) };
+      const material = {
+        ...m,
+        itemCode: currentCode,
+        name: catalogNames.get(currentCode) ?? (m.materialChange?.desc || cipDesc(m)),
+      };
       if (m.materialChange) {
         material.materialChange = {
           ...m.materialChange,
-          fromName: catalogNames.get(m.itemCode) ?? cipDesc(m),
+          fromName: catalogNames.get(m.materialChange.from) ?? cipDesc(m),
           toName: catalogNames.get(m.materialChange.to) ?? m.materialChange.desc,
         };
       }
@@ -282,7 +311,10 @@ router.post(
 // ripcord, ...), most of it from other warehouses/processes - this keeps
 // only rows whose CIP `itemCode` is a known "Materiały SM" item
 // (sm_catalog.item_no - same numbering, confirmed against real data; see
-// knownSmItemNos).
+// knownSmItemNos). Runs after withCatalogNames, so a substituted material
+// is matched on the item it was changed *to* - matching the stale pre-swap
+// number here would keep/drop the wrong rows whenever only one side of a
+// swap is a warehouse item.
 router.post(
   "/materials/warehouse",
   asyncHandler(async (req, res) => {

@@ -13,6 +13,9 @@ function rowToApi(row) {
   return {
     id: row.id,
     lineName: row.line_name,
+    // null for a guideline that is about the line itself, whatever is
+    // brought to it - callers show those differently (see wps's own
+    // LineMaterialRulesTable).
     itemNo: row.item_no,
     // Only present when the item is also in sm_catalog - a rule can be set
     // up for an item number before it's catalogued, so this is left blank
@@ -29,7 +32,7 @@ export async function listLineMaterialRules() {
     `SELECT r.*, c.item_name
      FROM line_material_rules r
      LEFT JOIN sm_catalog c ON c.item_no = r.item_no
-     ORDER BY r.line_name, r.item_no`
+     ORDER BY r.line_name, r.item_no NULLS FIRST`
   );
   return rows.map(rowToApi);
 }
@@ -43,32 +46,48 @@ export async function listProductionLines() {
   return rows.map((r) => r.name);
 }
 
-// One row per (line, item) - a second save for the same pair replaces its
+// One row per (line, item), or one per line when no material is given - a
+// second save for the same target replaces its
 // note (ON CONFLICT ... DO UPDATE) rather than erroring, so the same form
 // serves both "add" and "edit". `line_material_rules_before_write` (the
 // trigger) refuses a line_name that isn't a real production line; its
 // P0001 is turned into an ApiError here instead of a bare 500.
 export async function upsertLineMaterialRule({ lineName, itemNo, note }) {
   const line = String(lineName ?? "").trim().toUpperCase();
-  const item = String(itemNo ?? "").trim();
+  // The material is optional: without one the guideline is about the line
+  // itself, whatever is being brought to it (item_no IS NULL - see
+  // schema.sql's own comment on the table).
+  const item = String(itemNo ?? "").trim() || null;
   const text = String(note ?? "").trim();
   if (!line) throw new ApiError("Podaj linię.", 400);
-  if (!item) throw new ApiError("Podaj numer materiału.", 400);
   if (!text) throw new ApiError("Podaj treść wytycznej.", 400);
 
   let row;
   try {
-    ({ rows: [row] } = await pool.query(
-      `INSERT INTO line_material_rules (line_name, item_no, note)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (line_name, item_no) DO UPDATE SET note = EXCLUDED.note
-       RETURNING *`,
-      [line, item, text]
-    ));
+    // Two upserts, because the conflict target differs: `(line_name,
+    // item_no)` cannot catch a repeat line-wide rule (Postgres treats NULLs
+    // as distinct, so ON CONFLICT never fires on it) - that one is caught
+    // by the partial unique index on line_name WHERE item_no IS NULL.
+    ({ rows: [row] } = item
+      ? await pool.query(
+          `INSERT INTO line_material_rules (line_name, item_no, note)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (line_name, item_no) DO UPDATE SET note = EXCLUDED.note
+           RETURNING *`,
+          [line, item, text]
+        )
+      : await pool.query(
+          `INSERT INTO line_material_rules (line_name, item_no, note)
+           VALUES ($1, NULL, $2)
+           ON CONFLICT (line_name) WHERE item_no IS NULL DO UPDATE SET note = EXCLUDED.note
+           RETURNING *`,
+          [line, text]
+        ));
   } catch (err) {
     if (err.code === "P0001") throw new ApiError(err.message, 400);
     throw err;
   }
+  if (!item) return rowToApi({ ...row, item_name: null });
   const { rows: named } = await pool.query("SELECT item_name FROM sm_catalog WHERE item_no = $1", [item]);
   return rowToApi({ ...row, item_name: named[0]?.item_name ?? null });
 }

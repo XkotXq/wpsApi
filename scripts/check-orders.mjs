@@ -1,11 +1,16 @@
-// Check of src/orders.draft.sql (run: node scripts/check-orders-draft.mjs): runs it inside a transaction against
-// the dev database, asserts the rules, then ROLLS BACK - nothing is kept.
+// Regression check for the transport-orders tables (orders/order_items/...,
+// now folded into src/schema.sql for real - see wpsapi/AGENTS.md's
+// "Transport orders" section). Run: node scripts/check-orders.mjs - applies
+// the whole schema inside a transaction against the dev database (a no-op
+// against one already migrated, since every statement in schema.sql is
+// idempotent by design), asserts the rules below, then ROLLS BACK so
+// nothing this script inserts is kept.
 import { config } from "dotenv";
 import fs from "fs";
 config({ path: ".env" });
 const { pool } = await import("../src/db.js");
 
-const sql = fs.readFileSync(new URL("../src/orders.draft.sql", import.meta.url), "utf8");
+const sql = fs.readFileSync(new URL("../src/schema.sql", import.meta.url), "utf8");
 const client = await pool.connect();
 let failures = 0;
 const check = (name, ok, detail = "") => {
@@ -58,14 +63,32 @@ try {
       [type, o.requested_by, o.from_location, o.to_location, JSON.stringify(o.details), o.created_at]);
   };
   const water = (await insert("water_refill", { to_location: "SH01", details: { water: "clean" } })).rows[0];
-  check("order number format", /^C415\/260924\/\d{3}$/.test(water.order_no), water.order_no);
+  // The suffix counts orders within the minute and restarts at 1 in the
+  // next one (it used to be 3 random digits) - see orders_before_insert.
+  check("order number format", /^C415\/260924\/\d+$/.test(water.order_no), water.order_no);
+  check("first order of its minute is /1", water.order_no.endsWith("/1"), water.order_no);
   check("shift columns", water.shift_code === "C" && String(water.shift_date.toLocaleDateString("sv")) === "2026-09-24");
+
+  const sameMinute = (await insert("water_refill", { to_location: "SH01", details: { water: "clean" } })).rows[0];
+  check("the next order that minute is /2", sameMinute.order_no.endsWith("/2"), sameMinute.order_no);
+  const nextMinute = (
+    await insert("water_refill", { to_location: "SH01", details: { water: "clean" }, created_at: "2026-09-25T01:16:00+02:00" })
+  ).rows[0];
+  check("a new minute restarts at /1", nextMinute.order_no === "C416/260924/1", nextMinute.order_no);
 
   const many = new Set();
   for (let i = 0; i < 300; i += 1) {
     many.add((await insert("waste_removal", { from_location: "ST02", created_at: "2026-09-24T14:37:00+02:00" })).rows[0].order_no);
   }
   check("300 orders in the same minute all unique", many.size === 300, `${many.size} distinct`);
+  // A contiguous 1..300 run, not just 300 distinct values - that is what
+  // says the counter is really counting and not skipping or re-drawing.
+  const suffixes = new Set([...many].map((n) => Number(n.split("/")[2])));
+  check(
+    "and they are numbered 1..300 with no gaps",
+    suffixes.size === 300 && Math.min(...suffixes) === 1 && Math.max(...suffixes) === 300,
+    `${Math.min(...suffixes)}..${Math.max(...suffixes)}`
+  );
 
   // --- required fields per type ---
   await fails("water without kind refused", () => insert("water_refill", { to_location: "SH01" }), "orders_type_fields");

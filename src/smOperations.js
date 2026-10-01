@@ -26,6 +26,10 @@ function rowToApi(row) {
     productBatch: row.product_batch,
     operator: row.performed_by,
     time: row.performed_at,
+    // Which order this was issued against (see schema.sql's order_id column
+    // on this table) - null for the vast majority of ordinary operations
+    // with no order context, e.g. smpda's own HomeShell scan flow.
+    orderId: row.order_id != null ? String(row.order_id) : null,
   };
 }
 
@@ -131,8 +135,8 @@ export async function createSmOperations(entries) {
       const operation = OPERATIONS.includes(entry.operation) ? entry.operation : "receipt";
       const id = newId();
       const { rows } = await client.query(
-        `INSERT INTO sm_operations (id, operation, item_no, item_name, unit_id, quantity, location_code, product_batch, performed_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+        `INSERT INTO sm_operations (id, operation, item_no, item_name, unit_id, quantity, location_code, product_batch, performed_by, order_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
         [
           id,
           operation,
@@ -143,6 +147,7 @@ export async function createSmOperations(entries) {
           String(entry.location ?? "").trim(),
           String(entry.productBatch ?? "").trim(),
           entry.operator ? String(entry.operator).trim() : null,
+          entry.orderId ? String(entry.orderId).trim() : null,
         ]
       );
       created.push(rows[0]);

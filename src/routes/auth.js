@@ -2,8 +2,20 @@ import { Router } from "express";
 import http from "node:http";
 import { URL } from "node:url";
 import rateLimit from "express-rate-limit";
+import { createLoginEvent } from "../loginEvents.js";
 
 const router = Router();
+
+// "Historia logowania" - only smpda ever sends `deviceLabel` (see
+// loginEvents.js's own comment), so this never fires for a wps/stock
+// browser login. Fire-and-forget: an audit-log write must never fail the
+// login itself, so a DB hiccup here is just logged, not surfaced to the
+// caller.
+function logDeviceLogin(body, employeeNo) {
+  const deviceLabel = String(body?.deviceLabel ?? "").trim();
+  if (!deviceLabel) return;
+  createLoginEvent({ employeeNo, deviceLabel }).catch((err) => console.error("[auth] login-event write failed:", err));
+}
 
 // CIP words its own errors in Chinese (e.g. a wrong password), which is no
 // use to the warehouse. So a failure carries a stable `code` for the client
@@ -130,6 +142,7 @@ router.post("/login", loginLimiter, async (req, res) => {
 			return res.status(400).json({ error: "Podaj login i hasło." });
 		}
 		const data = bypassSession(username);
+		logDeviceLogin(req.body, data.user_info.username);
 		return res.json({
 			token: data.access_token,
 			refreshToken: data.refresh_token,
@@ -141,6 +154,7 @@ router.post("/login", loginLimiter, async (req, res) => {
 	}
 	try {
 		const data = await loginToOldApp(req.body ?? {});
+		logDeviceLogin(req.body, data.user_info?.username ?? req.body?.username);
 		res.json({
 			token: data.access_token,
 			refreshToken: data.refresh_token,
