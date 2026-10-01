@@ -298,10 +298,21 @@ Tables: `locations` (places; SH01-07, ST01-13, FC01-03, FL01 are the fixed produ
   `completed_shift_code`/`completed_shift_date` = the shift that fulfilled it,
   derived from `completed_at` (no manual A/B/C marking).
 - Status: `new` -> `in_progress` -> `delivered` -> `done`; `new` -> `done`;
-  `in_progress` <-> `problem`; `new`/`in_progress`/`problem`/`delivered`
-  -> `cancelled`. Timestamps are filled by the trigger,
+  `in_progress` <-> `problem`; `delivered` -> `problem`; and
+  **`cancelled` only from `new`**. Timestamps are filled by the trigger,
   `taken_by`/`completed_by` must be supplied. A closed order is frozen;
   number, type, requester and `created_at` never change.
+- **An order can only be cancelled while nobody has started it** (since
+  2026-10-01). Once a forklift operator has taken it, the only ways out are
+  "zrealizowane" or the problem loop below - a transport somebody is already
+  carrying must not be able to vanish from under them. `cancelOrder`
+  refuses the rest with "Zamówienia w realizacji nie można anulować - zgłoś
+  problem.", and so does the transition guard in `schema.sql`: the rule was
+  being broken from the outside (a "Zgłoś problem" that cancelled), so an
+  old client build still installed on somebody's phone cannot get round it
+  either - it gets an error, which is also how a stale client makes itself
+  known. wps is the only app that offers "Anuluj" at all, and only on a
+  `new` order.
 - **The problem loop** (added 2026-10-01). "Zgłoś problem" **never cancels
   an order** - it hands it to the other side, who has to answer it. One
   endpoint, both directions (`POST /:id/problem`, description **required**):
@@ -348,8 +359,9 @@ Tables: `locations` (places; SH01-07, ST01-13, FC01-03, FL01 are the fixed produ
 - **The delivery/confirmation path is the same for every type.** The
   forklift operator presses "Dostarczone" in smVendor (`-> delivered`), and
   the person who ordered it then confirms ("Zgadza się", `-> done`) or
-  reports a problem (`-> cancelled`) in smOrder or wps; doing nothing is
-  also an answer, since the sweep auto-accepts after `AUTO_ACCEPT_MINUTES`.
+  reports a problem (`-> problem`, never `-> cancelled`) in smOrder or wps;
+  doing nothing is also an answer, since the sweep auto-accepts after
+  `AUTO_ACCEPT_MINUTES`.
   - An order **with** items (material_order, spool_order) can only be
     delivered once every item is issued - `deliverOrder` re-checks that
     server-side against `order_items_progress`, so a client whose checklist
