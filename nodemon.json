@@ -1,0 +1,17 @@
+{
+  "comment": [
+    "nodemon watches this whole directory by default, which restarts the dev",
+    "server whenever anything here is written - including files a running",
+    "script writes itself. That bit twice: scripts/importInvListSm.mjs writes",
+    "a backup under backups/ before it starts, and the restart dropped the",
+    "connection mid-import (ECONNRESET on the next request).",
+    "",
+    "So: watch only the source the server actually runs. scripts/ is left out",
+    "on purpose too - those are one-off and regression scripts, run by hand",
+    "against the running server, and editing one has never been a reason to",
+    "restart it."
+  ],
+  "watch": ["src"],
+  "ext": "js,mjs,json,sql",
+  "ignore": ["backups/*", "scripts/*", "**/*.test.js"]
+}

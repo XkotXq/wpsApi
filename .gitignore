@@ -8,3 +8,8 @@ npm-debug.log*
 
 # unexpected server errors, see src/errorHandler.js
 /logs
+
+# Kopie stanu "Materiały SM" pisane przez scripts/importInvListSm.mjs przed
+# każdym nadpisaniem. To prawdziwe dane magazynowe zakładu - numery, ilości
+# i lokalizacje - a to repozytorium jest publiczne.
+backups/

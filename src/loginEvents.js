@@ -1,14 +1,17 @@
 import { pool } from "./db.js";
 
-// "Historia logowania" (wps's Zamówienia/Transporty nav) - see schema.sql's
-// login_events comment: which forklift ("wózek") a PDA login happened on,
-// written from routes/auth.js whenever the login carried a deviceLabel.
+// "Historia logowania" (wps's Zamówienia/Transporty nav) - who logged in
+// and when, written from routes/auth.js after every successful login.
+//
+// It used to carry a per-device forklift label ("Wózek 3"), set on
+// smVendor's own Konto page and sent with the login; a row was written only
+// when that label was present. The label was dropped on 2026-10-02, so this
+// now records every login instead of only labelled ones.
 
 function rowToApi(row) {
   return {
     id: String(row.id),
     employeeNo: row.employee_no,
-    deviceLabel: row.device_label,
     loggedInAt: row.logged_in_at,
   };
 }
@@ -24,9 +27,8 @@ export async function listLoginEvents(limit) {
 // Called from routes/auth.js right after a successful login - never throws
 // into the caller's own response: a login itself must not fail just because
 // this one audit insert did (see that route's own try/catch around this).
-export async function createLoginEvent({ employeeNo, deviceLabel }) {
+export async function createLoginEvent({ employeeNo }) {
   const employee = String(employeeNo ?? "").trim();
-  const device = String(deviceLabel ?? "").trim();
-  if (!employee || !device) return;
-  await pool.query("INSERT INTO login_events (employee_no, device_label) VALUES ($1, $2)", [employee, device]);
+  if (!employee) return;
+  await pool.query("INSERT INTO login_events (employee_no) VALUES ($1)", [employee]);
 }

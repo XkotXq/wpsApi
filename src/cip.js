@@ -302,7 +302,10 @@ const SPOOL_SIZE_LABEL_RE = /rozmiar\s+szpuli\s*:\s*(.+)/i;
 // Matching a piece against an actual catalog item is routes/cipOrders.js's
 // job (it alone touches the database) - see that file's `matchDrumCatalog`
 // and `splitLengthLabel`.
-function extractSpoolSizeSegments(historyEditData) {
+// Exported for scripts/check-drum-match.mjs, which runs this against the
+// real catalog - the matching is pure string work and worth a test that
+// does not need CIP.
+export function extractSpoolSizeSegments(historyEditData) {
   if (!historyEditData) return [];
   for (const field of OP_REQUEST_FIELDS) {
     const text = historyEditData[field];

@@ -277,23 +277,22 @@ Tables: `locations` (places; SH01-07, ST01-13, FC01-03, FL01 are the fixed produ
   01:15 - shift C started 24.09, 4th hour, first order of that minute).
   Time is Europe/Warsaw wall clock, so the hour digit is always 1-8 even on
   a daylight-saving night.
-  - The suffix **counts within the minute and restarts at 1 in the next
-    one** (the minute is already in the prefix, which is what keeps the
-    whole number unique). It was 3 random digits until 2026-10-01: that
-    made a number needlessly long (`/124` for the only order in its
-    minute) and left two numbers from the same minute sorting arbitrarily.
-  - `MAX(suffix)+1`, not `count+1` - a deleted row would otherwise re-issue
-    a number that already existed. The advisory lock on the prefix (already
-    there, to serialize same-minute orders) is what makes that read-then-write
-    safe.
-  - **Old numbers are not migrated and must not be**: people have them on
-    paper. A minute that already holds one simply counts on past it (after
-    `/124` comes `/125`), so both formats coexist in history for good.
-    Nothing parses `order_no` - every client only displays it - so the
-    change is display-only for them.
-  - Within one shift-day the number now sorts chronologically, but **sort
-    lists by `created_at` anyway**: across days the date sits in the middle
-    segment, so a plain string sort is not chronological overall.
+  - The suffix is **3 random digits** (100-999). The minute is already in
+    the prefix, so the suffix only has to separate orders placed within the
+    same minute; random keeps every number the same width. It was a
+    per-minute counter for one day (2026-10-01 to 2026-10-02) and was put
+    back to random on request.
+  - A drawn number that already exists is **redrawn** (up to 50 times)
+    rather than risked: 900 values make a clash unlikely, but against a
+    UNIQUE column "unlikely" is a 23505 nobody can read. The advisory lock
+    on the prefix keeps two concurrent same-minute inserts from drawing at
+    the same moment.
+  - **Nothing parses `order_no`** - every client only displays it - so
+    changing the shape of the suffix never breaks a client, and old numbers
+    in history need no migration.
+  - **Sort lists by `created_at`, never by `order_no`**: the suffix is
+    random, and across days the date sits in the middle segment, so a string
+    sort is not chronological at all.
 - `shift_code`/`shift_date` = the shift it was placed in;
   `completed_shift_code`/`completed_shift_date` = the shift that fulfilled it,
   derived from `completed_at` (no manual A/B/C marking).
@@ -340,6 +339,67 @@ Tables: `locations` (places; SH01-07, ST01-13, FC01-03, FL01 are the fixed produ
     the delivery, not the issuing, and is often about the stock itself.
   - Checked by `node scripts/check-problem-loop.mjs` - both directions, the
     refusals, the undone delivery, and the resulting timeline.
+- **"Pozycja wydana" means issued at least once**, not issued up to the
+  ordered amount (since 2026-10-02). `order_items.quantity` is always a
+  piece count ("10 szt.") while the issued amount is the catalog's own unit
+  (kg, km), so the old `issued_quantity >= quantity` compared pieces with
+  kilograms: an order for a material sold by weight could never be
+  delivered. `order_items_progress.issue_count` (how many issue scans hit
+  the line, unit-free) is the signal, used by `deliverOrder` and sent as
+  `issueCount` for every client to use instead of re-deriving it.
+  - The piece count is therefore **not verified** for an aggregate material:
+    two spools and four spools can weigh the same, so nothing but the
+    operator knows which went out. smpda shows the ordered piece count while
+    issuing; that is the whole safeguard. Only individually tracked
+    categories (FRP: one scan per drum) make the count exact.
+  - That view is **dropped and recreated**, not CREATE OR REPLACE'd: the
+    replace form cannot insert a column anywhere but the end (42P16), and it
+    silently left `issue_count` out when it was added in the middle.
+- **Taking an order is race-safe.** `takeOrder` updates
+  `WHERE id = $1 AND status = 'new'` and tells the loser who got it
+  ("Zamówienie przyjął już 4601270.", 409). Without the status guard two
+  operators pressing at the same moment both got 200: the second UPDATE
+  still matched, and in_progress -> in_progress is not a status change so it
+  slipped past the transition guard - the later writer silently took over
+  `taken_by` while `order_events` still credited the first. Confirmed
+  live before the fix.
+- **The requester may edit, cancel or delete their own order - but only
+  while nobody has started it** (added 2026-10-02, `check-order-edit.mjs`):
+  - `POST /:id/edit/start` takes an edit lock (`editing_by`/`editing_at`),
+    which hides the order from the forklift queue (`editing: true` in the
+    payload) and makes `takeOrder` refuse it. **The lock expires after
+    `EDIT_LOCK_MINUTES` (5)**, because an app killed mid-edit would
+    otherwise hide the order for good; smOrder re-sends it every 2 minutes
+    while the form is open, and `/:id/edit/stop` releases it at once.
+  - `PATCH /:id` saves (places, details, note and the whole item list -
+    replaced wholesale) and releases the lock. The type, requester, number
+    and `created_at` stay fixed, as `orders_before_update` already
+    enforced.
+  - `DELETE /:id` removes it outright, for one placed by mistake - unlike
+    cancelling, which keeps it in history with a reason.
+  - `orders_require_items` is now a constraint trigger on **INSERT OR
+    UPDATE**: it was INSERT-only, so an edit could leave a material order
+    with no positions at all.
+- **Chat on an order** (`order_messages`, added 2026-10-02): what the two
+  people on one transport say to each other, reached from the same screen as
+  the problem loop. `GET /:id/messages` (oldest first, `?afterId=N` for
+  only what is newer), `POST /:id/messages`. Deliberately not
+  `order_events`: an event is something that happened to the order, a
+  message is somebody talking, and mixing them makes the audit trail
+  unreadable. Writing to a closed order is allowed - people explain things
+  after the fact.
+  - **The clients poll `?afterId=` every second** while the thread is open.
+    That is what makes it feel immediate without a socket: the answer is an
+    empty array almost every time (~6 ms a call), and a dropped poll on
+    warehouse Wi-Fi costs one second rather than a reconnect.
+  - `order_message_reads` (order, employee, `last_read_id`) is how far each
+    person has read, written by `POST /:id/messages/read` with GREATEST so a
+    late call cannot move the mark backwards. An order then carries
+    `messageCount` and - for the employee named in `?viewer=` -
+    `unreadCount`, which excludes that person's own messages. No viewer, no
+    unread count: there is no per-user auth, so the caller has to say who is
+    asking.
+  - Checked by `node scripts/check-order-chat.mjs`.
 - **`order_events` is the audit trail** - one row per status move plus
   `created`, written by the `orders_after_insert`/`orders_after_update`
   triggers and read by `GET /:id/events` (oldest first). This is what makes
@@ -423,6 +483,11 @@ Tables: `locations` (places; SH01-07, ST01-13, FC01-03, FL01 are the fixed produ
   (ours, generated) and from `details->>'production_order_no'`
   (material_order's own, used to query CIP - see roadmap). Not yet scoped to
   particular types.
+- **`GET /orders` pages on request**: `?limit=N` returns one page and
+  `?beforeCreatedAt=&beforeId=` the next, keyset rather than OFFSET -
+  orders close while somebody is scrolling, and an offset silently repeats
+  or skips a row at every page boundary. Both cursor parts travel together;
+  no limit means the whole list, which is what wps and smpda read.
 - "Lista zamówień" = `new` + `in_progress` + `delivered`; "Historia
   zamówień" = `done` + `cancelled` (`STATUS_SETS`). A `delivered` order
   stays in the active list until it is really closed.

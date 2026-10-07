@@ -13,6 +13,10 @@ function rowToApi(row) {
   return {
     id: row.id,
     lineName: row.line_name,
+    // Which kind of transport this is about, or null for "any" - see
+    // schema.sql's order_type column. A rule can name a line, a material, a
+    // type, or any combination of them.
+    orderType: row.order_type,
     // null for a guideline that is about the line itself, whatever is
     // brought to it - callers show those differently (see wps's own
     // LineMaterialRulesTable).
@@ -52,39 +56,36 @@ export async function listProductionLines() {
 // serves both "add" and "edit". `line_material_rules_before_write` (the
 // trigger) refuses a line_name that isn't a real production line; its
 // P0001 is turned into an ApiError here instead of a bare 500.
-export async function upsertLineMaterialRule({ lineName, itemNo, note }) {
-  const line = String(lineName ?? "").trim().toUpperCase();
-  // The material is optional: without one the guideline is about the line
-  // itself, whatever is being brought to it (item_no IS NULL - see
-  // schema.sql's own comment on the table).
+export async function upsertLineMaterialRule({ lineName, itemNo, orderType, note }) {
+  // All three scopes are optional on their own - a guideline can be about a
+  // line, a material, a kind of transport, or any combination - but a rule
+  // with none of them would apply to every transport in the plant, which is
+  // not a standing instruction, it is noise on every screen.
+  const line = String(lineName ?? "").trim().toUpperCase() || null;
   const item = String(itemNo ?? "").trim() || null;
+  const type = String(orderType ?? "").trim() || null;
   const text = String(note ?? "").trim();
-  if (!line) throw new ApiError("Podaj linię.", 400);
+  if (!line && !item && !type) throw new ApiError("Podaj linię, materiał albo rodzaj transportu.", 400);
   if (!text) throw new ApiError("Podaj treść wytycznej.", 400);
 
   let row;
   try {
-    // Two upserts, because the conflict target differs: `(line_name,
-    // item_no)` cannot catch a repeat line-wide rule (Postgres treats NULLs
-    // as distinct, so ON CONFLICT never fires on it) - that one is caught
-    // by the partial unique index on line_name WHERE item_no IS NULL.
-    ({ rows: [row] } = item
-      ? await pool.query(
-          `INSERT INTO line_material_rules (line_name, item_no, note)
-           VALUES ($1, $2, $3)
-           ON CONFLICT (line_name, item_no) DO UPDATE SET note = EXCLUDED.note
-           RETURNING *`,
-          [line, item, text]
-        )
-      : await pool.query(
-          `INSERT INTO line_material_rules (line_name, item_no, note)
-           VALUES ($1, NULL, $2)
-           ON CONFLICT (line_name) WHERE item_no IS NULL DO UPDATE SET note = EXCLUDED.note
-           RETURNING *`,
-          [line, text]
-        ));
+    // One upsert for every combination, since the unique index covers the
+    // whole triple with NULLS NOT DISTINCT (see schema.sql). This used to be
+    // two statements with different conflict targets, because the old plain
+    // UNIQUE could not catch a repeated line-wide rule - Postgres treated
+    // its NULL item_no as distinct and ON CONFLICT never fired.
+    ({ rows: [row] } = await pool.query(
+      `INSERT INTO line_material_rules (line_name, item_no, order_type, note)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (line_name, item_no, order_type) DO UPDATE SET note = EXCLUDED.note
+       RETURNING *`,
+      [line, item, type, text]
+    ));
   } catch (err) {
     if (err.code === "P0001") throw new ApiError(err.message, 400);
+    // An order type the schema does not know (FK on order_types).
+    if (err.code === "23503") throw new ApiError("Nieprawidłowy rodzaj transportu.", 400);
     throw err;
   }
   if (!item) return rowToApi({ ...row, item_name: null });

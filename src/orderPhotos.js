@@ -135,3 +135,55 @@ export async function photosByOrderIds(orderIds) {
   }
   return byOrder;
 }
+
+// ── "Krótkie odcinki" ────────────────────────────────────────────────────
+// The same bucket, the same presigned links, the same accepted formats -
+// only the key prefix and the owning table differ. Kept in this module so
+// there is one place that knows how a photo is stored, rather than a second
+// copy of the S3 wiring next to shortLengths.js.
+
+export async function saveShortLengthPhoto(reportId, file, uploadedBy) {
+  const by = String(uploadedBy ?? "").trim();
+  if (!by) throw new ApiError("Brak numeru pracownika - zaloguj się ponownie.", 400);
+  if (!file?.buffer?.length) throw new ApiError("Brak pliku zdjęcia.", 400);
+  const contentType = String(file.mimetype ?? "");
+  const ext = EXT_BY_TYPE[contentType];
+  if (!ext) throw new ApiError(`Nieobsługiwany format zdjęcia: ${contentType || "nieznany"}.`, 400);
+
+  const { rows } = await pool.query("SELECT id FROM short_length_reports WHERE id = $1", [reportId]);
+  if (!rows.length) throw new ApiError("Nie znaleziono zgłoszenia.", 404);
+
+  const now = new Date();
+  const month = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+  const storageKey = `${month}/short-length-${reportId}/${randomUUID()}.${ext}`;
+
+  await s3().putObject(PHOTO_BUCKET, storageKey, file.buffer, file.buffer.length, { "Content-Type": contentType });
+  const { rows: saved } = await pool.query(
+    `INSERT INTO short_length_photos (report_id, storage_key, content_type, uploaded_by)
+     VALUES ($1, $2, $3, $4) RETURNING *`,
+    [reportId, storageKey, contentType, by]
+  );
+  return photoRowToApi(saved[0], await linkFor(storageKey));
+}
+
+/// Every report's photos, as `Map<reportId, photo[]>` - same contract (and
+/// same never-fail-the-list behaviour) as photosByOrderIds above.
+export async function photosByShortLengthIds(reportIds) {
+  const byReport = new Map();
+  if (!reportIds.length || !photosConfigured()) return byReport;
+  const { rows } = await pool.query(
+    "SELECT * FROM short_length_photos WHERE report_id = ANY($1) ORDER BY uploaded_at",
+    [reportIds]
+  );
+  if (!rows.length) return byReport;
+  try {
+    const withLinks = await Promise.all(rows.map(async (row) => photoRowToApi(row, await linkFor(row.storage_key))));
+    for (const [i, photo] of withLinks.entries()) {
+      const key = String(rows[i].report_id);
+      byReport.set(key, [...(byReport.get(key) ?? []), photo]);
+    }
+  } catch (err) {
+    console.error(`Short length photos: could not sign links - ${err.message}`);
+  }
+  return byReport;
+}

@@ -47,8 +47,11 @@ try {
   const { rows: cat } = await pool.query("SELECT item_no, item_name FROM sm_catalog ORDER BY item_no LIMIT 1");
 
   for (const c of CASES) {
+    // Ordered in 5s on purpose: the point below is that **one** issue of a
+    // smaller amount is enough to hand the order over, so the ordered
+    // quantity has to be bigger than what gets issued.
     const items = c.fromCatalog
-      ? [{ itemNo: cat[0].item_no, itemName: cat[0].item_name, quantity: "1", unit: "szt." }]
+      ? [{ itemNo: cat[0].item_no, itemName: cat[0].item_name, quantity: "5", unit: "szt." }]
       : (c.items ?? []);
     const order = await must("/orders", {
       method: "POST",
@@ -62,13 +65,26 @@ try {
       // With items, delivery must still be refused until they are issued.
       const early = await api(`/orders/${order.id}/deliver`, { method: "POST", body: { deliveredBy: "T-FORK" } });
       check(`${c.type}: delivery refused while items are unissued`, early.status === 400, `HTTP ${early.status}`);
+      // **One** issue per line, of less than was ordered. Since 2026-10-02
+      // that is what "ta pozycja jest zrobiona" means (wpsApi's
+      // order_items_progress.issue_count): the old rule compared the issued
+      // amount with the ordered one, which compared the catalog's own unit
+      // (kg, km) with a piece count and so could never be satisfied for a
+      // material sold by weight.
       for (const item of items) {
         await pool.query(
           `INSERT INTO sm_operations (id, operation, item_no, item_name, quantity, order_id, performed_by)
-           VALUES ($1, 'issue', $2, $3, $4, $5, 'T-FORK')`,
-          [randomUUID(), item.itemNo, item.itemName, item.quantity, order.id]
+           VALUES ($1, 'issue', $2, $3, '1', $4, 'T-FORK')`,
+          [randomUUID(), item.itemNo, item.itemName, order.id]
         );
       }
+      const partly = await must(`/orders/${order.id}`);
+      check(
+        `${c.type}: one issue is less than ordered`,
+        partly.items.every((i) => Number(i.issuedQuantity) < Number(i.quantity)),
+        partly.items.map((i) => `${i.issuedQuantity}/${i.quantity}`).join(", ")
+      );
+      check(`${c.type}: and counts as issued`, partly.items.every((i) => i.issueCount === 1));
     }
 
     const delivered = await must(`/orders/${order.id}/deliver`, { method: "POST", body: { deliveredBy: "T-FORK" } });

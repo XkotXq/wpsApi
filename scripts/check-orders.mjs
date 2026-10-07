@@ -63,39 +63,45 @@ try {
       [type, o.requested_by, o.from_location, o.to_location, JSON.stringify(o.details), o.created_at]);
   };
   const water = (await insert("water_refill", { to_location: "SH01", details: { water: "clean" } })).rows[0];
-  // The suffix counts orders within the minute and restarts at 1 in the
-  // next one (it used to be 3 random digits) - see orders_before_insert.
-  check("order number format", /^C415\/260924\/\d+$/.test(water.order_no), water.order_no);
-  check("first order of its minute is /1", water.order_no.endsWith("/1"), water.order_no);
+  // [shift][hour][minute]/[yymmdd]/[3 random digits] - see
+  // orders_before_insert. The suffix was a per-minute counter for one day
+  // (2026-10-01 to 2026-10-02) and is random again.
+  check("order number format", /^C415\/260924\/\d{3}$/.test(water.order_no), water.order_no);
   check("shift columns", water.shift_code === "C" && String(water.shift_date.toLocaleDateString("sv")) === "2026-09-24");
 
   const sameMinute = (await insert("water_refill", { to_location: "SH01", details: { water: "clean" } })).rows[0];
-  check("the next order that minute is /2", sameMinute.order_no.endsWith("/2"), sameMinute.order_no);
+  check("same minute, different number", sameMinute.order_no !== water.order_no, `${water.order_no} vs ${sameMinute.order_no}`);
+  check("same minute keeps the same prefix", sameMinute.order_no.startsWith("C415/260924/"), sameMinute.order_no);
   const nextMinute = (
     await insert("water_refill", { to_location: "SH01", details: { water: "clean" }, created_at: "2026-09-25T01:16:00+02:00" })
   ).rows[0];
-  check("a new minute restarts at /1", nextMinute.order_no === "C416/260924/1", nextMinute.order_no);
+  check("a new minute moves the prefix", nextMinute.order_no.startsWith("C416/260924/"), nextMinute.order_no);
 
+  // 300 in one minute out of 900 possible suffixes: the redraw loop has to
+  // dodge every number already taken, so a single duplicate here means the
+  // collision handling is wrong - which a handful of inserts would hide.
   const many = new Set();
   for (let i = 0; i < 300; i += 1) {
     many.add((await insert("waste_removal", { from_location: "ST02", created_at: "2026-09-24T14:37:00+02:00" })).rows[0].order_no);
   }
   check("300 orders in the same minute all unique", many.size === 300, `${many.size} distinct`);
-  // A contiguous 1..300 run, not just 300 distinct values - that is what
-  // says the counter is really counting and not skipping or re-drawing.
-  const suffixes = new Set([...many].map((n) => Number(n.split("/")[2])));
-  check(
-    "and they are numbered 1..300 with no gaps",
-    suffixes.size === 300 && Math.min(...suffixes) === 1 && Math.max(...suffixes) === 300,
-    `${Math.min(...suffixes)}..${Math.max(...suffixes)}`
-  );
+  const suffixes = [...many].map((n) => n.split("/")[2]);
+  check("every suffix is 3 digits in 100..999", suffixes.every((x) => /^\d{3}$/.test(x) && Number(x) >= 100));
+  // Random, not a counter dressed up as one: 300 draws from 900 values
+  // landing in a perfect run would mean the loop is really counting.
+  const asNumbers = suffixes.map(Number);
+  const contiguous = Math.max(...asNumbers) - Math.min(...asNumbers) === 299;
+  check("and they are not a contiguous run", !contiguous, `${Math.min(...asNumbers)}..${Math.max(...asNumbers)}`);
 
   // --- required fields per type ---
   await fails("water without kind refused", () => insert("water_refill", { to_location: "SH01" }), "orders_type_fields");
   await fails("water with bad kind refused", () => insert("water_refill", { to_location: "SH01", details: { water: "muddy" } }), "orders_type_fields");
   await fails("transport needs from and to", () => insert("goods_transport", { from_location: "SH01" }), "orders_type_fields");
   await fails("waste must not have a destination", () => insert("waste_removal", { from_location: "SH01", to_location: "SH02" }), "orders_type_fields");
-  await fails("unknown place refused for a non-transport type", () => insert("machine_transport", { from_location: "XX99", to_location: "SH02" }), "linii produkcyjnych");
+  // warehouse_return, not machine_transport: the latter became a
+  // free-text type on 2026-10-06 (a machine goes to a workshop as readily
+  // as to a line), so an unknown place is legitimate on it now.
+  await fails("unknown place refused for a line-only type", () => insert("warehouse_return", { from_location: "XX99" }), "linii produkcyjnych");
   await fails("waste removal takes lines only", () => insert("waste_removal", { from_location: "Hala X" }), "linii produkcyjnych");
 
   // --- goods_transport: free-text places, shared suggestions ---

@@ -30,6 +30,10 @@ function rowToApi(row) {
     // on this table) - null for the vast majority of ordinary operations
     // with no order context, e.g. smpda's own HomeShell scan flow.
     orderId: row.order_id != null ? String(row.order_id) : null,
+    // 'stock' (the ordinary case) or 'floor' - a length taken from the hall
+    // rather than off the shelf, which by definition moved no stock. See
+    // schema.sql's own column comment.
+    source: row.source ?? "stock",
   };
 }
 
@@ -135,8 +139,8 @@ export async function createSmOperations(entries) {
       const operation = OPERATIONS.includes(entry.operation) ? entry.operation : "receipt";
       const id = newId();
       const { rows } = await client.query(
-        `INSERT INTO sm_operations (id, operation, item_no, item_name, unit_id, quantity, location_code, product_batch, performed_by, order_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+        `INSERT INTO sm_operations (id, operation, item_no, item_name, unit_id, quantity, location_code, product_batch, performed_by, order_id, source)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
         [
           id,
           operation,
@@ -148,6 +152,10 @@ export async function createSmOperations(entries) {
           String(entry.productBatch ?? "").trim(),
           entry.operator ? String(entry.operator).trim() : null,
           entry.orderId ? String(entry.orderId).trim() : null,
+          // Anything but the one known alternative is an ordinary stock
+          // movement: a client that does not know about this sends nothing
+          // and keeps behaving exactly as before.
+          entry.source === "floor" ? "floor" : "stock",
         ]
       );
       created.push(rows[0]);

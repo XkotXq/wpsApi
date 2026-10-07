@@ -14,6 +14,8 @@ import ordersRouter from "./routes/orders.js";
 import { startAutoAcceptSweep } from "./orders.js";
 import { ensurePhotoBucket } from "./orderPhotos.js";
 import stocksRouter from "./routes/stocks.js";
+import employeeRolesRouter from "./routes/employeeRoles.js";
+import shortLengthsRouter from "./routes/shortLengths.js";
 import itemsRouter from "./routes/items.js";
 import smCatalogRouter from "./routes/smCatalog.js";
 import smItemsRouter from "./routes/smItems.js";
@@ -43,6 +45,8 @@ api.use("/locks/:material", loadMaterial, locksRouter);
 api.use("/stocks", stocksRouter);
 api.use("/sm-catalog", smCatalogRouter);
 api.use("/sm-items", smItemsRouter);
+api.use("/employee-roles", employeeRolesRouter);
+api.use("/short-lengths", shortLengthsRouter);
 api.use("/sm-operations", smOperationsRouter);
 api.use("/sm-spools", smSpoolsRouter);
 // Generic item routes last - every other :material key is matched here.

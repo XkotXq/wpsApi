@@ -30,6 +30,7 @@ const check = (name, ok, detail = "") => {
 const LINE = "ST13"; // a real production line, unlikely to carry live rules
 const madeRules = [];
 let orderId = null;
+let otherOrderId = null;
 try {
   const { rows: cat } = await pool.query("SELECT item_no, item_name FROM sm_catalog ORDER BY item_no LIMIT 2");
   const [ruled, plain] = cat;
@@ -95,12 +96,81 @@ try {
 
   // Items must not be duplicated by the new joins in the view.
   check("no row multiplication from the rule join", fetched.items.length === 2, `${fetched.items.length} items`);
-} finally {
-  if (orderId) {
-    await pool.query("DELETE FROM order_items WHERE order_id = $1", [orderId]);
-    await pool.query("DELETE FROM orders WHERE id = $1", [orderId]);
+
+  // ── A guideline about a kind of transport (2026-10-07) ──────────────────
+  // A rule can name an order type instead of - or as well as - a line, so
+  // these cover the scopes the old pair of cases could not express.
+  // Only type-scoped rules: the line+item rule created above is one of the
+  // two the specificity assertion below compares, so clearing it here would
+  // make that check pass or fail for the wrong reason.
+  // Type rules from an earlier run, plus this line own line-wide rule -
+  // that one would win every order-level assertion below (a line beats a
+  // type on purpose). The line+item rule stays: it is one of the two the
+  // item specificity check compares.
+  await pool.query(
+    "DELETE FROM line_material_rules WHERE order_type IS NOT NULL OR (line_name = $1 AND item_no IS NULL)",
+    [LINE]
+  );
+
+  const typeRule = await api("/line-material-rules", {
+    method: "POST",
+    body: { orderType: "material_order", note: "Każde zamówienie materiału: potwierdź u brygadzisty" },
+  });
+  madeRules.push(typeRule.id);
+  check("type-only rule saves with no line", typeRule.lineName === null && typeRule.orderType === "material_order",
+    `${typeRule.lineName} / ${typeRule.orderType}`);
+
+  check("a type rule reaches an order of that type",
+    (await api(`/orders/${orderId}`)).lineRuleNote === "Każde zamówienie materiału: potwierdź u brygadzisty");
+
+  // An order of a different type must not pick it up. water_refill takes a
+  // line and nothing else, so it is the cheapest second order to place.
+  const other = await api("/orders", {
+    method: "POST",
+    body: { type: "water_refill", employeeNo: "CHECK", to: LINE, details: { water: "clean" }, note: "check" },
+  });
+  otherOrderId = other.id;
+  check("it does not reach an order of another type", other.lineRuleNote === "", JSON.stringify(other.lineRuleNote));
+
+  // Specificity: naming both a line and a type beats naming only the type.
+  const bothRule = await api("/line-material-rules", {
+    method: "POST",
+    body: { lineName: LINE, orderType: "material_order", note: "Tylko na ST13 i tylko materiały" },
+  });
+  madeRules.push(bothRule.id);
+  check("the more specific rule wins",
+    (await api(`/orders/${orderId}`)).lineRuleNote === "Tylko na ST13 i tylko materiały",
+    (await api(`/orders/${orderId}`)).lineRuleNote);
+
+  // Two rules matching one item must still yield one row, not two.
+  const itemTypeRule = await api("/line-material-rules", {
+    method: "POST",
+    body: { itemNo: ruled.item_no, orderType: "material_order", note: "Reguła materiału po typie" },
+  });
+  madeRules.push(itemTypeRule.id);
+  const afterBoth = await api(`/orders/${orderId}`);
+  check("an item matching two rules is still one row", afterBoth.items.length === 2, `${afterBoth.items.length} items`);
+  check("the item takes the more specific of them",
+    afterBoth.items.find((i) => i.itemNo === ruled.item_no)?.ruleNote === "Krótkie odcinki najpierw",
+    afterBoth.items.find((i) => i.itemNo === ruled.item_no)?.ruleNote);
+
+  // A rule naming nothing at all would apply to every transport - refused.
+  let refused = false;
+  try {
+    await api("/line-material-rules", { method: "POST", body: { note: "Dotyczy wszystkiego" } });
+  } catch {
+    refused = true;
   }
-  await pool.query("DELETE FROM line_material_rules WHERE line_name = $1", [LINE]);
+  check("a rule with no scope at all is refused", refused);
+} finally {
+  for (const id of [orderId, otherOrderId]) {
+    if (!id) continue;
+    await pool.query("DELETE FROM order_items WHERE order_id = $1", [id]);
+    await pool.query("DELETE FROM orders WHERE id = $1", [id]);
+  }
+  // Type-scoped rules have no line, so the old line-only cleanup would have
+  // left them behind to affect every later run - and every real order.
+  await pool.query("DELETE FROM line_material_rules WHERE line_name = $1 OR id = ANY($2::bigint[])", [LINE, madeRules]);
   console.log("\ncleaned up the test order and every rule on " + LINE);
   await pool.end();
 }

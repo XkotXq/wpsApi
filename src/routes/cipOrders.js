@@ -78,7 +78,10 @@ export async function withCatalogNames(lines) {
 // carries elsewhere with one. Tried as an extra candidate alongside the
 // literal code, never in place of it, so a CIP text that *does* keep the
 // "W" still matches the same way as before.
-function withoutLeadingW(code) {
+// Exported for scripts/check-drum-match.mjs, which runs this against the
+// real catalog - the matching is pure string work and worth a test that
+// does not need CIP.
+export function withoutLeadingW(code) {
   return /^W\d/i.test(code) ? code.slice(1) : null;
 }
 
@@ -91,7 +94,10 @@ function withoutLeadingW(code) {
 // 600X400X340") has no label. The label itself is never validated against
 // any particular format (a length, a count, ...) - just carried along as
 // text, appended to the matched material's own name below.
-function splitLengthLabel(segment) {
+// Exported for scripts/check-drum-match.mjs, which runs this against the
+// real catalog - the matching is pure string work and worth a test that
+// does not need CIP.
+export function splitLengthLabel(segment) {
   const colon = segment.indexOf(":");
   if (colon === -1) return { label: null, rest: segment };
   return { label: segment.slice(0, colon).trim(), rest: segment.slice(colon + 1).trim() };
@@ -158,7 +164,10 @@ function fuzzyMatchDrumCatalog(spoolSizeText, drumEntries) {
 // "W1250B" one that would otherwise also match its first word alone. Falls
 // back to a fuzzy search (see fuzzyMatchDrumCatalog) when nothing matches
 // this way at all, rather than giving up outright.
-function matchDrumCatalog(spoolSizeText, drumEntries) {
+// Exported for scripts/check-drum-match.mjs, which runs this against the
+// real catalog - the matching is pure string work and worth a test that
+// does not need CIP.
+export function matchDrumCatalog(spoolSizeText, drumEntries) {
   if (!spoolSizeText) return null;
   let best = null;
   const consider = (code, entry) => {
