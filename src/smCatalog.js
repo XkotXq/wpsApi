@@ -63,6 +63,20 @@ export async function smItemNames(itemNos) {
   return new Map(rows.map((r) => [r.item_no, r.item_name]));
 }
 
+// item_no -> category for whichever of `itemNos` the catalog knows - for a
+// caller that has to pick materials out of a CIP bill of materials by what
+// kind of thing they are rather than by name (see routes/cipOrders.js's
+// material groups: FRP is recognised by its name, PE only by its category,
+// because "PE" as a name fragment also matches every TPEE row).
+export async function smItemCategories(itemNos) {
+  const wanted = [...new Set(itemNos.map((v) => String(v ?? "").trim()).filter(Boolean))];
+  if (!wanted.length) return new Map();
+  const { rows } = await pool.query("SELECT item_no, category FROM sm_catalog WHERE item_no = ANY($1::text[])", [
+    wanted,
+  ]);
+  return new Map(rows.map((r) => [r.item_no, r.category]));
+}
+
 // Every catalog item under the "Drum" category (wooden/cardboard reels,
 // e.g. "Wooden drum W600A", "Wooden drum W1250B II") - used to match CIP's
 // own free-text drum/spool size requirement for an order against a real

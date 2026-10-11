@@ -150,6 +150,192 @@ shape never differs by which path found it.
   survive `/materials/warehouse`'s own filter with no special-casing
   needed.
 
+## Production progress (`src/productionProgress.js`, `POST /cip-orders/progress`)
+"Postęp produkcji" / "Production progress" (wps: Zamówienia → Postęp
+produkcji). The planners keep a list of what runs on which production line;
+it is pasted in whole and answered per position with **how long the run is
+and how much of it is still to be made**. Live against CIP on every request,
+nothing stored, needs the caller's own `X-Cip-Token`.
+- The pasted list is a line, then its positions under it
+  (`ST01` / `CF-260010303028101-544182`). **`CF-...-...` is CIP's own
+  `erpNumber`** - confirmed against real data on 2026-10-08: one CIP row per
+  production line of an order, each with its own erpNumber, length and
+  per-stage figures. The middle segment is the `orderNumber`.
+- **Either form is accepted, mixed in one paste**: a job number
+  ("CF-260010303028101-544182") is one line of one order, a bare order
+  number ("260010303028101") is every line of it. The lists come in both
+  shapes and the order number is the one the planners always have, so the
+  parser takes both - an order-number entry has `erpNumber: null` and its
+  result rows carry `wholeOrder: true` plus whichever job number CIP gives
+  each line.
+  - A bare number needs **8+ digits** (both "20260401" and the 15-digit
+    "260010303024501" are real order numbers) while a position suffix is
+    six, so a stray "544182" on a line of its own is not taken for an order.
+  - A row carrying a job number is never *also* read as a bare order number -
+    the job number's own middle segment matches that pattern too, so the two
+    are looked for one after the other, never together.
+  - Because one entry can become a dozen rows, `MAX_PROGRESS_ROWS` (600)
+    bounds the **result**, checked after the cheap searches and before the
+    per-position material fetches; `MAX_PROGRESS_POSITIONS` (400) still
+    bounds the paste itself.
+- **CIP cannot filter by erpNumber**, so a position is found by searching its
+  order (`findCipRowsByOrderNumber`) and matching the erpNumber in the
+  result. That is also the dedup: a real list of 26 positions was only 16
+  orders (one order held 6 of them), so it is one search per order, 4 at a
+  time.
+- The text is parsed **server-side** (`parsePastedProgressList`) so one
+  tested parser serves every caller. A row's *content* decides what it is,
+  not its indentation - the same list arrives indented from a browser and
+  tab-separated from Excel, and a textarea loses leading whitespace.
+- **`layersFinishedLength` is not what has been produced.** That name is a
+  trap: it is always exactly equal to the row's own `totalLength`, i.e. the
+  length the layer is *planned* for, so reading it as "done" reports every
+  order as complete. The progress is `layersNotFinishedLength` - what is
+  still to run - and produced = total - that. Verified on all 12 lines of
+  order 260010303024501: every finished line (opStatus 5) reported 0, and one
+  line reported 44 km total with 4 km left, i.e. 40 km made and still
+  running.
+- The headline km figures come from the **SH (sheathing) stage**
+  (`shProcess`), the one whose lengths are in cable km like `totalLength`
+  itself.
+- **Every stage is also reported in its own right**, as `processes` per
+  position plus a `processKeys` list for the whole result
+  (`rowProcesses`/`presentProcessKeys`): what is left of that stage and what
+  it is out of. CIP has fifteen (`sc cl rl dt rb sl sz rs sh fh uu ac we dp
+  tb`, in that key order, which is the route's order) and most are null on
+  any given cable - a real order used four and the other eleven were null on
+  all twelve of its lines, so `processKeys` carries only the stages
+  something in the result actually reports on and the rest never become
+  columns.
+  - **A stage is measured against its own planned amount, never the run's
+    length**, because the units differ per stage: SC (stranding) plans the
+    run times the number of elements it strands (a 44 km run reported 264, a
+    12 km one 72), so comparing that to `totalLength` would read as 600%
+    complete.
+  - Two shapes, same meaning: most stages carry `orderProcessLayers`
+    (`layersFinishedLength`/`layersNotFinishedLength`), DP reports flat
+    (`finishedLength`/`notFinishedLength`). **The naming trap applies to
+    both** - the "finished" field is the planned amount.
+  - A stage present but reporting all zeros is treated as no data, like a
+    null one: a column of dashes is not a completion state.
+  - Stage figures are summed across layers here (the headline takes the max
+    instead - see rowProgress): a stage's own planned amount is the
+    denominator, so summing both sides keeps its percentage self-consistent.
+    Every row seen so far has exactly one layer, so the two agree today.
+  - Each stage also carries **`inRunKm`**: whether its figures are the
+    cable's own kilometres, so a caller knows when it may write "km" next to
+    them. True when the stage plans exactly the run's length (SH, SZ, DP);
+    false for SC, whose 264 against a 44 km run is not kilometres of cable.
+- **What a day's run takes of each FRP, and how many rolls that is**
+  (`frpRollsForDay`, sent as `frpRolls`). Two figures from the people who
+  run the lines (2026-10-09): a line gets through **55 km of cable a day**,
+  and an FRP roll holds **48.8 km** (rolls vary; this is the usual one and
+  the only length anything assumes).
+  - `daySharesForLine` hands the day out to the line's positions **in the
+    order they were pasted**, since a line finishes what it is on before
+    starting the next: 35 km left on one position and 45 on the next is 35
+    of the first and 20 of the second, not 55 of either.
+  - Each share is turned into FRP by the material's own `perKm`, then into
+    rolls with `Math.ceil` - a day of 55 km at 1.017 is 55.9 km of FRP,
+    which is **two** rolls of 48.8.
+  - **Summed per line, never pooled**: parallel machines cannot share a
+    roll, so two lines on the same FRP need their own even if neither gets
+    through a whole one. Pooling would say one roll where two are needed.
+  - Only lines whose stage is counted in cable km take part (`inRunKm`): a
+    daily capacity in km means nothing against stranding's own figures.
+- **Consumption per kilometre of cable** (`perKmConsumption`, sent as a
+  material's `perKm`) is **derived from the run, not read off CIP's own
+  `qty`**: that field's base is not always the cable kilometre. FRP's 1.017
+  does divide the run on 997.5 km, 168 km and 36 km alike, but a real
+  tube-filling gel row read `qty` 2.810177 against 1112.830092 required on a
+  198 km run - 396 units, twice the run. Dividing the required amount by the
+  run's own length is right whatever CIP counted in. Shown in wps's plain
+  view only.
+- **Which stage a production line runs** is `processForLine`, sent on every
+  row as `lineProcess`: ST strands (`sz`), SH and FC sheathe (`sh`), SC is
+  `sc`, matched on the line name prefix. Given by the people who run the
+  lines on 2026-10-09 - **nothing CIP sends says this**, so it is written
+  down here rather than guessed per screen, and a line the naming says
+  nothing about (FL01, a free-text place) comes back null for the caller to
+  report as unknown instead of showing some other stage's figures. wps's
+  plain view is the caller: one stage column, the line's own.
+- **An erpNumber can match more than one CIP row** (seen live:
+  `CF-260010303024501-544065` is both line (2) and line (12) of its order,
+  with different lengths) - each match is its own result row. A position CIP
+  does not know comes back `found: false` rather than being dropped.
+- **Which materials a position needs** ride on the same response, as
+  `materials` (`{ frp: [...], pe: [...] }`, `attachBomMaterials` in
+  routes/cipOrders.js) plus a `materialKeys` list for the whole result:
+  CIP's own bill of materials per position, sorted into the kinds this
+  screen calls out. Measured live - 26 positions, so 52 extra CIP calls, in
+  1.7 s - so it is always fetched rather than being a second request or a
+  per-row expand. A group nothing in the paste needs is left out of
+  `materialKeys` and never becomes a column, the same rule the stages
+  follow.
+  - The BOM is fetched by the row this screen **already has**
+    (`cip.js`'s `cipOrderBomForRow`), not by searching for the line again:
+    that saves a search per position and, because the progress search asked
+    for every `workStatus`, it also works for a line CIP has already
+    finished.
+  - **The two groups match on different signals, and swapping either one
+    breaks it** (`MATERIAL_GROUPS` in productionProgress.js):
+    - **FRP by name.** Every item in the catalog's "FRP" category does have
+      FRP in its name, but seven more are filed under "PL-MAT" ("FRP with
+      steel wire reinforced Φ0.45mm×1.5mm"...) and "GLYCL" ("FRP 3.4mm/VIP",
+      "GFRP/0.7*0.75mm"), all sold by the kilometre like the rest - a
+      category check would miss seven of the sixty-three.
+    - **`jacket` by category**, exactly `"PE"` or `"LSZH"` - one job done by
+      two compounds, both in kg (15 PE items against 32 LSZH ones, so PE
+      alone would miss every flame-retardant build). "PE" as a *name*
+      fragment also matches every "TPEE"/"TPEE Masterbatch" row - 21 items
+      that are not PE - and the separate "PE Materbatch" category is
+      colourant *for* PE, not PE.
+    Both checked against the live catalog on 2026-10-08. The groups are
+    **not exclusive**: nothing downstream may assume a material is in at
+    most one.
+  - Matched against **our catalog's** own name and category
+    (`smItemNames`/`smItemCategories`) and only for items this warehouse
+    stocks (`knownSmItemNos`), never CIP's own description - otherwise the
+    match would depend on how CIP happens to word a row. Substitutions go
+    through the shared `withCatalogNames`, so a swapped material is reported
+    as the item actually to be used now.
+  - **Each material names its own stage**, in the BOM row's `process`
+    field ("SC", "SH", ...) - captured live on 2026-10-09 alongside `layer`
+    and `operationCode` ("SC58"). Those are exactly the codes PROCESS_KEYS
+    uses, so the two line up with no mapping table to keep in step.
+    `groupBomMaterialsByProcess` sorts the materials by it and they ride on
+    the stage itself, as `processes.<key>.materials`; a material naming no
+    stage, or one this row does not run, is left out rather than parked
+    under an arbitrary one.
+  - `requiredQuantity` is CIP's own figure for the whole run;
+    **`remainingQuantity` is that scaled by how much of **its own stage** is
+    still to make** (the run as a whole only for a material whose stage is
+    unknown) - stranding can be finished while sheathing has half the run
+    left, and one figure cannot be right for both. It is - derived as a proportion of the required amount rather than by
+    multiplying CIP's per-km `qty`, so it holds whatever unit the material is
+    counted in. (The two do agree: a 997.5 km run needing 1014.4575 KM is
+    exactly 1.017 per km.)
+- `node scripts/check-production-progress.mjs` asserts the parsing, the
+  arithmetic, the stage reader and both material-group rules against real
+  captured row shapes and real
+  catalog/BOM names - **needs neither the database nor CIP**, which is the
+  point: the alternative is a live token and a half-finished production order
+  every time somebody touches this.
+
+## `workStatus` on CIP's order search
+Known since 2026-10-08, confirmed live on order 260010303024501 (12 lines):
+**"0" is every status, "4" only unfinished lines, "5" only finished ones.**
+This is the filter `ORDER_SEARCH_PATH` takes, and it was previously captured
+from CIP's UI with its meaning unknown.
+- `findCipOrderLines` sends **"4"**, so it **cannot find a production order
+  whose line is already finished** - 5 of those 12 lines are invisible to it,
+  and with them to wps's "Zamówienia" search and to "Zamówienie materiału"'s
+  own material picker. Left as it is for now rather than widened as a side
+  effect of the work that uncovered it; decide whether looking up a finished
+  order's BOM should work before changing it.
+- `findCipRowsByOrderNumber` (production progress) deliberately sends "0",
+  because "how much is left to make" has to be able to answer zero.
+
 ## Data model
 Generic CRUD (`src/items.js`: `listItems`/`createItem`/`updateItem`/
 `deleteItem`/`reorderItems`/`transferItem`) driven by per-material field

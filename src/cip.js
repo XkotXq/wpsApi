@@ -171,10 +171,20 @@ async function findCipRowToIssue(itemNo, quantity, cipToken) {
 // "Order process count" screen's own search - takes a full orderId
 // ("260010309034801(4)", order number + line in parens) directly, unlike
 // order/infor/page/search's loose orderNumber match, so this is an exact
-// lookup for one line. `workStatus: "4"` and `processRouteList: []` are
-// captured as-is from CIP's own UI request for this screen (meaning of "4"
-// not confirmed - narrow the filter or make it a parameter if a line in
-// another status ever needs to be found and isn't).
+// lookup for one line. `processRouteList: []` is captured as-is from CIP's
+// own UI request for this screen.
+//
+// `workStatus` is now known (2026-10-08, confirmed live against order
+// 260010303024501, which has 12 lines): **"0" is every status, "4" only the
+// unfinished lines, "5" only the finished ones** - the same values CIP's own
+// filter dropdown sends. The "4" below therefore means findCipOrderLines
+// **cannot find a production order whose line is already finished** - 5 of
+// those 12 lines are invisible to it, and with them to the "Zamówienia" tab
+// and to "Zamówienie materiału"'s own material picker. That is a real
+// limitation, left as it is for now rather than widened as a side effect of
+// the work that uncovered it; `findCipRowsByOrderNumber` below deliberately
+// asks for "0", because "how much is left to make" has to be able to answer
+// zero.
 const ORDER_SEARCH_PATH = "/cppms/orderProcessCount/page/search";
 // A different CIP screen's search - the one this file used before switching
 // to orderProcessCount above. Kept only as a fallback (see
@@ -218,6 +228,55 @@ async function findCipOrderLines(orderId, cipToken) {
     current += 1;
   }
   return lines;
+}
+
+/**
+ * Every CIP row for a production **order number** - one per production line
+ * of that order, each with its own `erpNumber`, its own length and its own
+ * per-stage figures. For "Postęp produkcji" (productionProgress.js), which
+ * is handed erpNumbers: CIP cannot filter by erpNumber at all, so a position
+ * is found by searching its order and matching the number in the result.
+ *
+ * `workStatus: "0"` - every status, finished lines included (see
+ * ORDER_SEARCH_PATH's own comment for what the values mean). A finished line
+ * is not a miss here, it is the answer "nothing left to make".
+ *
+ * CIP's own `orderNumber` filter is not documented as exact - the other
+ * search in this file matches it loosely - so the rows are filtered on it
+ * again here. A full 15-digit number is unlikely to be a substring of
+ * another order's, but "unlikely" is not something to report production
+ * figures on.
+ */
+export async function findCipRowsByOrderNumber(orderNumber, cipToken) {
+  const wanted = String(orderNumber ?? "").trim();
+  if (!wanted) return [];
+
+  const rows = [];
+  let current = 1;
+  for (;;) {
+    const reply = await cipFetch(ORDER_SEARCH_PATH, cipToken, {
+      page: { current, size: ORDER_SEARCH_PAGE_SIZE },
+      orderProcessCountDto: {
+        processRouteList: [],
+        workStatus: "0",
+        orderNumber: wanted,
+        requestDateStart: "",
+        requestDateEnd: "",
+        dispatchTimeStart: "",
+        dispatchTimeEnd: "",
+      },
+    });
+    assertTokenAccepted(reply);
+    if (!reply.ok || reply.json?.code !== 0) {
+      throw new ApiError(reply.json?.msg || `Nie udało się wyszukać zlecenia ${wanted} w CIP (${reply.status}).`, 502);
+    }
+    const page = reply.json.data ?? {};
+    const pageRows = page.records ?? [];
+    rows.push(...pageRows);
+    if (pageRows.length < ORDER_SEARCH_PAGE_SIZE || current * ORDER_SEARCH_PAGE_SIZE >= (page.total ?? 0)) break;
+    current += 1;
+  }
+  return rows.filter((r) => String(r.orderNumber ?? "").trim() === wanted);
 }
 
 // Every distinct exact orderId ("260010309034801(4)") CIP's loose order
@@ -512,6 +571,33 @@ HANDLERS.issue = async ({ itemNo, quantity }, cipToken) => {
   if (!cipAccepted(reply)) throw new ApiError(reply.json?.msg || `CIP odrzuciło wydanie (${reply.status}).`, 409);
   return { cipRowId: row.id };
 };
+
+/**
+ * The bill of materials for an order row **the caller already holds**, with
+ * any substitution attached (see attachMaterialChanges) - no order search.
+ *
+ * getCipOrderMaterials above starts from an orderId and has to find the line
+ * first; this starts from the line itself, which is what
+ * productionProgress.js already has from its own search. Two reasons it is
+ * worth its own function rather than reusing that one:
+ *   - it saves a CIP search per position, and that screen looks up a whole
+ *     shift's worth of them at once;
+ *   - that search asked for every `workStatus`, so this also works for a
+ *     line CIP has already finished - which findCipOrderLines cannot find at
+ *     all (see ORDER_SEARCH_PATH's own comment).
+ *
+ * The process requirements (the drum/spool free text) are deliberately not
+ * fetched here: a caller after materials does not need them, and they are a
+ * third CIP call per row.
+ */
+export async function cipOrderBomForRow({ erpNumber, orderId, orderSn }, cipToken) {
+  const [materials, materialMappings] = await Promise.all([
+    findCipOrderBom({ erpNumber, orderId, orderSn }, cipToken),
+    findCipMaterialMappings(orderId, cipToken),
+  ]);
+  return attachMaterialChanges(materials, materialMappings);
+}
+
 
 // Sends one operation to CIP - or, with CIP_SYNC off, does nothing.
 //   -> { synced: false, skipped: true }   sync is off
