@@ -270,6 +270,54 @@ export function processForLine(line) {
   return null;
 }
 
+/**
+ * Which **kinds of material a line's own stage actually consumes**, by that
+ * stage (`processForLine`'s own codes).
+ *
+ * A position carries the whole cable's BOM, not the part one stage puts in -
+ * CIP has no other shape for it - so without this every line of a cable looks
+ * like it needs everything the cable is made of. It does not, and the
+ * difference is physical:
+ *   - **FRP goes in when the cable is laid up** (the ST lines, stage `sz`):
+ *     it is the strength member, it is paid off a roll at that machine and
+ *     nowhere else;
+ *   - **the tube granulate is extruded at secondary coating** (the SC lines,
+ *     stage `sc`): the tubes are made there, around the FRP that is already
+ *     in the machine, so what an SC line is sent is a bigbag of PBT;
+ *   - **the compound goes on when the cable is sheathed** (SH and FC lines,
+ *     stage `sh`): the FRP and the tubes are long since inside the cable by
+ *     then, so a bigbag of jacket compound is what that line is sent, and
+ *     neither a roll of FRP nor the granulate for a tube.
+ *
+ * Reported on 2026-10-12, after the export listed FRP for an SH line, and
+ * corrected on 2026-10-13, after it listed FRP for SC01 as well. It is also
+ * what the day's packages are counted off: counting a cable's FRP again on
+ * its sheathing line ordered it twice, once per line the order was pasted on.
+ *
+ * **Not derivable from the BOM's own process codes** - CIP files FRP's rows
+ * under "SC" while the ST line that runs them is stage "SZ", which is exactly
+ * how the FRP once disappeared from the lines that need it, and then, read
+ * the other way round, how it turned up on the SC lines that only extrude
+ * tubes. What the SC stage is, is readable in its own figures instead: it
+ * plans the run times the number of tubes - 672 against a 168 km four-tube
+ * run, 72 against a 12 km six-tube one - which is a stage that makes tubes,
+ * not one that lays up a cable. It is a rule about the plant, like the line
+ * names above, so it lives here and not in a screen.
+ *
+ * A line whose stage is unknown gets **every** kind: there is nothing to
+ * narrow it by, and showing too much beats hiding what somebody has to fetch.
+ */
+const STAGE_MATERIAL_GROUPS = {
+  sz: ["frp"],
+  sc: ["tube"],
+  sh: ["jacket"],
+};
+
+export function materialKeysForLineProcess(lineProcess) {
+  if (!lineProcess) return [...MATERIAL_GROUP_KEYS];
+  return STAGE_MATERIAL_GROUPS[lineProcess] ?? [...MATERIAL_GROUP_KEYS];
+}
+
 /** Every stage with figures on this row, keyed by its short code. */
 export function rowProcesses(row) {
   const totalLength = km(Number(row?.totalLength ?? 0) || 0);
@@ -336,21 +384,43 @@ export function isFrpName(name) {
  *   - `frp` by **name** (`isFrpName` above): the catalog's own "FRP"
  *     category would miss seven real FRP items filed under "PL-MAT" and
  *     "GLYCL".
- *   - `jacket` by **category**, `PE` or `LSZH`: "PE" as a name fragment
- *     matches every "TPEE"/"TPEE Masterbatch" row too - 21 items that are
- *     not PE at all - so only the category is safe. Exactly those two: the
- *     separate "PE Materbatch" category is colourant for PE, not PE itself.
+ *   - `jacket` (`PE`, `LSZH`) and `tube` (`PBTP`) by **category**: "PE"
+ *     as a name fragment matches every "TPEE"/"TPEE Masterbatch" row too -
+ *     21 items that are not PE at all - so only the category is safe.
+ *     Exactly those categories, and never a `… Masterbatch` one: those are
+ *     colourant for the compound, not the compound.
  *
- * Both checked against the live catalog on 2026-10-08.
+ * Checked against the live catalog on 2026-10-08, and again for PBTP on
+ * 2026-10-12.
  */
-// The jacket compound is either PE or LSZH depending on the cable, both
-// counted in kg, both doing the same job - "PE" alone would miss every
-// flame-retardant build (32 LSZH items against 15 PE ones).
+// Both of these arrive in a bigbag and are counted in kg, and they are two
+// groups rather than one because **two different machines eat them**:
+//   - the jacket compound (`PE`, `LSZH`, depending on whether the cable is
+//     flame-retardant) goes on at sheathing. "PE" alone would miss every
+//     LSZH build - 32 items against 15 PE ones - so both are named.
+//   - the tube granulate (`PBTP`, 4 items: "BASF PBT(6550LN)", "PBTP for
+//     micro cable tube", ...) is extruded into the loose tubes at secondary
+//     coating, long before the cable reaches a sheathing line. It rode in
+//     the jacket group for a day (added 2026-10-12, asked for as "PBTB"),
+//     which put it on the SH lines' list and nowhere near the SC line that
+//     actually extrudes it - reported 2026-10-13.
+//
+// **PBTB is the same thing under the name the floor uses**; the catalog only
+// has PBTP, so both are matched and nothing hangs on which one turns up. The
+// `… Masterbatch` categories are deliberately out of both (36 `PBTP
+// Masterbatch…` items, and `PE Materbatch`): colourant, not compound.
 const JACKET_CATEGORIES = new Set(["PE", "LSZH"]);
+const TUBE_CATEGORIES = new Set(["PBTP", "PBTB"]);
 
+const byCategory = (categories) => (material) =>
+  categories.has(String(material.category ?? "").trim().toUpperCase());
+
+// In the order the cable is built in, which is the order the columns read in:
+// the strength member, the tubes laid around it, the jacket over them.
 export const MATERIAL_GROUPS = [
   { key: "frp", matches: (material) => isFrpName(material.name) },
-  { key: "jacket", matches: (material) => JACKET_CATEGORIES.has(String(material.category ?? "").trim().toUpperCase()) },
+  { key: "tube", matches: byCategory(TUBE_CATEGORIES) },
+  { key: "jacket", matches: byCategory(JACKET_CATEGORIES) },
 ];
 
 export const MATERIAL_GROUP_KEYS = MATERIAL_GROUPS.map((group) => group.key);
@@ -376,12 +446,77 @@ export function groupBomMaterials(materials) {
 // ─── How much FRP a day's run takes, and how many rolls that is ─────────────
 
 // What one production line gets through in a day, in kilometres of cable.
-// Given by the people who run them (2026-10-09).
-const LINE_DAILY_KM = 55;
+// Given by the people who run them: 55 on 2026-10-09, raised to 60 on
+// 2026-10-12, back to 55 on 2026-10-14 - that is the average a line
+// actually gets through, and an average is what a day's ordering has to
+// rest on. It has moved three times, so it stays a constant here and is
+// sent to the clients as `dailyKm` rather than written down in any of
+// them.
+//
+// This is the whole reason the packages are counted off `daySharesForLine`
+// and not off what is left of a run: a 150 km order is not ordered in one
+// go, it is ordered for the day in front of it - 55 km of it - and again
+// tomorrow.
+export const LINE_DAILY_KM = 55;
 
 // How much FRP one roll holds. Rolls do vary; this is the usual one, and the
 // only figure anything here assumes.
 const FRP_ROLL_KM = 48.8;
+
+// How much of a bagged material - jacket compound or tube granulate - one
+// bigbag holds. The standard size the
+// warehouse's own stock is split into - the same 500 kg wps's
+// lib/smMaterialsSeed.js splits a real CIP inventory export by. Like the
+// roll above: bags do vary, this is the usual one.
+const BIGBAG_KG = 500;
+
+// A line's **first** position, when this little is left of it, gets no FRP
+// ordered: the roll already on the payoff sees a tail that short out, and a
+// roll fetched for it would be carried back nearly full. Given by the people
+// who run the lines (2026-10-12). It is the first position only - what is on
+// the machine now - and FRP only: the day's cable still counts towards
+// everything else, including the compound.
+const FRP_SKIP_FIRST_KM = 15;
+
+/**
+ * How each material group is packaged: what one package holds in that
+ * group's own unit, **whether a package can serve more than one production
+ * line**, and whether a short first position is skipped. Keyed by
+ * MATERIAL_GROUPS' own keys, so a group with nothing to count simply has no
+ * entry and `packagesForDay` returns nothing for it.
+ *
+ * `pooled` is the difference between the two, and it is physical:
+ *   - an **FRP roll sits on one machine's payoff**, so two lines running
+ *     the same FRP each need their own even if neither gets through a whole
+ *     roll - counted per line (`pooled: false`);
+ *   - a **bigbag feeds whatever asks for it**, so one bag can cover two
+ *     orders, on one line or on two - counted once over the whole day
+ *     (`pooled: true`). Told to us on 2026-10-12, after the first version
+ *     counted bags per line and over-ordered them.
+ *
+ * `size` is only the default. Bags and rolls really do differ per
+ * material, so a caller may override it per item - see `packagesForDay`'s
+ * own `sizes`.
+ */
+export const PACKAGE_RULES = {
+  frp: { size: FRP_ROLL_KM, pooled: false, skipFirstBelowKm: FRP_SKIP_FIRST_KM },
+  tube: { size: BIGBAG_KG, pooled: true },
+  jacket: { size: BIGBAG_KG, pooled: true },
+};
+
+export const PACKAGED_GROUP_KEYS = Object.keys(PACKAGE_RULES);
+
+/**
+ * The package size to count an item by: what the caller set for that exact
+ * item number, or its group's default. A non-number, zero or a negative is
+ * ignored rather than trusted - it would turn the count into Infinity or a
+ * negative number of bags.
+ */
+export function packageSizeFor(group, itemNo, sizes) {
+  const override = Number(sizes?.[itemNo]);
+  if (Number.isFinite(override) && override > 0) return override;
+  return PACKAGE_RULES[group]?.size ?? 0;
+}
 
 /**
  * How a line's day is spent: its daily capacity handed out to the positions
@@ -391,10 +526,32 @@ const FRP_ROLL_KM = 48.8;
  * 35 km left on one position and 45 km on the next is 35 km of the first and
  * 20 km of the second - not 55 of either.
  *
- * **Only for a stage counted in cable kilometres** (`inRunKm`): stranding
- * plans the run times the elements it strands, so a daily capacity in km
- * means nothing against its figures.
+ * **Always in kilometres of cable**, whatever unit the line's own stage
+ * counts in - a daily capacity is a figure about cable, so what it is handed
+ * out against has to be one too (see `remainingInCableKm`).
  */
+/**
+ * What one stage of one row still has to make, **in kilometres of cable**.
+ *
+ * A stage counted in the cable's own kilometres (`inRunKm`) needs nothing
+ * doing to it. The others plan the run times the number of things they make
+ * of it - secondary coating plans 672 against a 168 km four-tube run - and
+ * that multiplier is exactly `planned / totalLength`, so dividing by it
+ * gives back the cable the stage has left. Read off the row's own two
+ * figures, never off the cable type, which nothing here parses.
+ *
+ * Until this existed an SC line dropped out of the day's counting entirely,
+ * and the granulate it extrudes was never ordered for it.
+ */
+export function remainingInCableKm(row, stage) {
+  if (!stage || !(stage.remaining > 0)) return 0;
+  if (stage.inRunKm) return stage.remaining;
+  const total = Number(row?.totalLength ?? 0);
+  const perCableKm = total > 0 ? stage.planned / total : 0;
+  if (!Number.isFinite(perCableKm) || perCableKm <= 0) return 0;
+  return Math.round((stage.remaining / perCableKm) * 1000) / 1000;
+}
+
 export function daySharesForLine(rows, dailyKm = LINE_DAILY_KM) {
   const process = rows[0]?.lineProcess;
   if (!process) return [];
@@ -403,9 +560,9 @@ export function daySharesForLine(rows, dailyKm = LINE_DAILY_KM) {
   let left = dailyKm;
   for (const row of rows) {
     if (left <= 0) break;
-    const stage = row.processes?.[process];
-    if (!stage || !stage.inRunKm || stage.remaining <= 0) continue;
-    const share = Math.min(stage.remaining, left);
+    const remaining = remainingInCableKm(row, row.processes?.[process]);
+    if (remaining <= 0) continue;
+    const share = Math.min(remaining, left);
     shares.push({ row, km: Math.round(share * 1000) / 1000 });
     left -= share;
   }
@@ -413,22 +570,31 @@ export function daySharesForLine(rows, dailyKm = LINE_DAILY_KM) {
 }
 
 /**
- * The FRP a day's work takes, per material, and how many rolls that is:
- * `[{ itemNo, name, unit, needed, rolls, lines: [{ line, needed, rolls }] }]`,
- * biggest first.
+ * What a day's work takes of one material group, per material, and how many
+ * packages that is:
+ * `[{ itemNo, name, unit, needed, packages, perKm, cableKm, lineCount,
+ *    lines: [{ line, needed, packages, perKm }] }]`,
+ * biggest first. FRP comes out in rolls, compound and granulate in bigbags - the
+ * arithmetic is the same, only the package size differs
+ * (`PACKAGE_RULES`), so both are counted here rather than in two
+ * near-identical functions that could drift apart.
  *
- * Two things decide the roll count, and both matter:
- *   - **a roll cannot be shared between lines**, because the machines run in
- *     parallel - two lines on the same FRP need their own rolls even if
- *     neither gets through a whole one;
- *   - **a line needing more than one roll holds gets another**
+ * Two things decide the count, and both matter:
+ *   - **a package cannot be shared between lines**, because the machines run
+ *     in parallel - two lines on the same FRP need their own rolls even if
+ *     neither gets through a whole one, and a bigbag hangs over one
+ *     extruder's hopper the same way;
+ *   - **a line needing more than one package holds gets another**
  *     (`Math.ceil`): a day of 55 km at 1.017 km of FRP per km of cable is
- *     55.9 km, which is two rolls of 48.8, not one.
+ *     55.935 km, which is two rolls of 48.8, not one.
  *
- * So the total is summed per line, never pooled: pooling would say one roll
- * where two lines each need their own.
+ * So the total is summed per line, never pooled: pooling would say one
+ * package where two lines each need their own.
  */
-export function frpRollsForDay(rows, { dailyKm = LINE_DAILY_KM, rollKm = FRP_ROLL_KM } = {}) {
+export function packagesForDay(rows, { group = "frp", dailyKm = LINE_DAILY_KM, sizes } = {}) {
+  const rule = PACKAGE_RULES[group];
+  if (!rule) return [];
+
   const byLine = new Map();
   for (const row of rows ?? []) {
     const line = row.line || "—";
@@ -438,31 +604,136 @@ export function frpRollsForDay(rows, { dailyKm = LINE_DAILY_KM, rollKm = FRP_ROL
 
   const byItem = new Map();
   for (const [line, lineRows] of byLine) {
-    // What this line's day takes of each FRP, in that material's own unit.
+    // Only what this line's own stage puts into the cable. A position carries
+    // the whole cable's BOM, so without this an order pasted on both its
+    // stranding line and its sheathing line had its FRP counted twice and its
+    // compound counted twice (see STAGE_MATERIAL_GROUPS).
+    if (!materialKeysForLineProcess(lineRows[0]?.lineProcess).includes(group)) continue;
+
+    // What this line's day takes of each material, in that material's own
+    // unit (km of FRP, kg of compound).
     const needOnLine = new Map();
-    for (const { row, km } of daySharesForLine(lineRows, dailyKm)) {
-      for (const item of row.materials?.frp ?? []) {
+    for (const [index, { row, km }] of daySharesForLine(lineRows, dailyKm).entries()) {
+      // The tail on the machine right now, when it is short enough that the
+      // roll already fitted will see it out (FRP only - see
+      // `skipFirstBelowKm`). The day's cable is unchanged; it is this
+      // material that is not fetched for it.
+      if (index === 0 && rule.skipFirstBelowKm && km < rule.skipFirstBelowKm) continue;
+      for (const item of row.materials?.[group] ?? []) {
         if (item.perKm === null || item.perKm === undefined) continue;
-        const entry = needOnLine.get(item.itemNo) ?? { item, needed: 0 };
+        const entry = needOnLine.get(item.itemNo) ?? { item, needed: 0, cableKm: 0 };
         entry.needed += km * item.perKm;
+        // The cable this material is being counted against, kept alongside
+        // the amount so the per-kilometre figure below is the one that
+        // actually produced it.
+        entry.cableKm += km;
         needOnLine.set(item.itemNo, entry);
       }
     }
 
-    for (const [itemNo, { item, needed }] of needOnLine) {
+    for (const [itemNo, { item, needed, cableKm }] of needOnLine) {
       const total =
-        byItem.get(itemNo) ?? { itemNo, name: item.name, unit: item.unit, needed: 0, rolls: 0, lines: [] };
+        byItem.get(itemNo) ??
+        {
+          itemNo,
+          name: item.name,
+          unit: item.unit,
+          // The size this item was counted by, so the screen can show and
+          // offer to change it rather than keeping its own copy.
+          packageSize: packageSizeFor(group, itemNo, sizes),
+          pooled: rule.pooled,
+          needed: 0,
+          packages: 0,
+          // Kilometres of cable the day's amount is for. Only here so
+          // `perKm` below can be the amount's own rate; nothing reads it as
+          // a figure in its own right.
+          cableKm: 0,
+          perKm: null,
+          // On how many lines the day needs this material at all. Its own
+          // field rather than `lines.length` for the caller to count,
+          // because what counts as "needed on a line" is this rule and not
+          // the screen's: a line whose share rounds to nothing does not
+          // need the material, and it is left out of both.
+          lineCount: 0,
+          lines: [],
+        };
       const lineNeeded = Math.round(needed * 1000) / 1000;
-      const lineRolls = rollKm > 0 ? Math.ceil(lineNeeded / rollKm) : 0;
+      // Per line only where a package cannot be shared. Pooled groups get
+      // one count over the whole total below - counting them per line is
+      // what made two half-used bags out of one.
+      const linePackages =
+        rule.pooled || total.packageSize <= 0 ? null : Math.ceil(lineNeeded / total.packageSize);
       total.needed = Math.round((total.needed + lineNeeded) * 1000) / 1000;
-      total.rolls += lineRolls;
-      total.lines.push({ line, needed: lineNeeded, rolls: lineRolls });
+      total.cableKm = Math.round((total.cableKm + cableKm) * 1000) / 1000;
+      if (linePackages !== null) total.packages += linePackages;
+      // A line that takes none of it is not a line it has to reach. Only
+      // reachable by rounding (a share of 0.0004 kg), and listing such a
+      // line would overstate both the breakdown and the count below.
+      if (lineNeeded > 0) {
+        total.lines.push({ line, needed: lineNeeded, packages: linePackages, perKm: perKmConsumption(lineNeeded, cableKm) });
+      }
       byItem.set(itemNo, total);
     }
   }
 
-  return [...byItem.values()].sort((a, b) => b.rolls - a.rolls || b.needed - a.needed);
+  for (const total of byItem.values()) {
+    // How much of this material one kilometre of cable takes - the figure
+    // you multiply by to plan, as against the day's amount, which is only
+    // this shift's. **Weighted by the cable it came from**, not averaged
+    // over the positions: the same compound runs at a different rate under
+    // every cable (its BOM row is per cable), so an unweighted mean of two
+    // rates would not reproduce `needed`, and this does.
+    total.perKm = perKmConsumption(total.needed, total.cableKm);
+    // One line per entry (the loop above is keyed by line), so this is the
+    // number of production lines the day needs this material on. It is the
+    // same for a pooled group as for a roll - how many places it has to
+    // reach is a question about the floor, not about packaging.
+    total.lineCount = total.lines.length;
+    if (!rule.pooled) continue;
+    // One count for the day: a bag covers whatever asks for it, so what
+    // matters is the total kilograms, not which order asked for them.
+    total.packages = total.packageSize > 0 ? Math.ceil(total.needed / total.packageSize) : 0;
+  }
+
+  return [...byItem.values()].sort((a, b) => b.packages - a.packages || b.needed - a.needed);
 }
+
+/**
+ * The same, for every group that comes in packages:
+ * `{ frp: [...], tube: [...], jacket: [...] }`. A group nothing in the paste needs comes
+ * back as an empty array, which the caller leaves out of the screen - the
+ * same rule `presentMaterialKeys` follows for the columns.
+ */
+export function packagesForDayByGroup(rows, options = {}) {
+  return Object.fromEntries(
+    PACKAGED_GROUP_KEYS.map((group) => [group, packagesForDay(rows, { ...options, group })])
+  );
+}
+
+/**
+ * A caller's own package sizes, cleaned up: `{ "<itemNo>": <number> }` with
+ * anything unusable dropped rather than refused, since one bad cell in a
+ * settings panel must not cost the whole answer. Zero, a negative, a
+ * non-number and an absurd size all fall back to the group default.
+ *
+ * Validated here rather than in the route because it is the same rule
+ * wherever the sizes come from.
+ */
+export function sanitisePackageSizes(raw) {
+  const clean = {};
+  for (const [itemNo, value] of Object.entries(raw ?? {})) {
+    const key = String(itemNo).trim();
+    const size = Number(value);
+    if (!key || !Number.isFinite(size) || size <= 0 || size > MAX_PACKAGE_SIZE) continue;
+    clean[key] = size;
+  }
+  return clean;
+}
+
+// Nothing is packed in more than this (km of FRP, kg of compound) - a guard
+// against a typo, not a real limit anybody is near: the biggest bag in use
+// is 1250 kg and the longest roll under 50 km.
+const MAX_PACKAGE_SIZE = 100000;
 
 /**
  * How much of a material one kilometre of cable takes.
@@ -485,7 +756,7 @@ export function perKmConsumption(requiredQuantity, totalLength) {
 
 /**
  * The same grouping, split by the **process stage that consumes the
- * material** - `{ sc: { frp: [...], jacket: [...] }, sh: {...} }`.
+ * material** - `{ sc: { tube: [...], ... }, sh: { jacket: [...], ... } }`.
  *
  * CIP's BOM says which stage each material belongs to in its own `process`
  * field ("SC", "SH", ...) - confirmed against a real BOM on 2026-10-09,
@@ -508,6 +779,36 @@ export function groupBomMaterialsByProcess(materials) {
     }
   }
   return byProcess;
+}
+
+/**
+ * The same materials, with every amount re-scaled to **what the line this
+ * row sits on still has to run** rather than to the material's own stage.
+ *
+ * Both figures are honest and they are different: a position can be stranded
+ * and still have its whole jacket to go. A **stage cell** is asked "what has
+ * this stage left", so there each material keeps its own stage's share. The
+ * **position's own list** is read as "what does this line fetch for this
+ * order", so it is this one - asked for on 2026-10-13, after an ST line was
+ * shown FRP for cable it had already laid up, the order's sheathing being
+ * what was really left.
+ *
+ * The share is a ratio inside one stage, so it needs no unit conversion: 240
+ * of 800 tube-kilometres is the same 0.3 as 60 of 200 cable ones. A line
+ * whose stage is unknown, or a stage with nothing planned, leaves the
+ * materials exactly as they came - there is nothing truer to put there.
+ */
+export function materialsForLineStage(materials, row) {
+  const stage = row?.lineProcess ? row.processes?.[row.lineProcess] : null;
+  if (!stage || !(stage.planned > 0)) return materials ?? [];
+  const scale = stage.remaining / stage.planned;
+  return (materials ?? []).map((material) => ({
+    ...material,
+    remainingQuantity:
+      material.requiredQuantity === null || material.requiredQuantity === undefined
+        ? null
+        : Math.round(material.requiredQuantity * scale * 1000) / 1000,
+  }));
 }
 
 /**
@@ -561,8 +862,11 @@ export async function getProductionProgress(entries, cipToken) {
   const rows = [];
   for (const entry of entries) {
     // The stage this entry's line runs, carried on every row so a client
-    // never has to know the plant's naming itself.
+    // never has to know the plant's naming itself - and with it, which kinds
+    // of material that stage actually consumes, so a screen can show the
+    // line what it fetches rather than everything the cable is made of.
     const lineProcess = processForLine(entry.line);
+    const lineMaterialKeys = materialKeysForLineProcess(lineProcess);
     const candidates = byNumber.get(entry.orderNumber) ?? [];
     // A job number names one line of the order; a bare order number stands
     // for all of them, so there is nothing to narrow it down by.
@@ -574,18 +878,35 @@ export async function getProductionProgress(entries, cipToken) {
       rows.push({
         ...entry,
         lineProcess,
+        lineMaterialKeys,
         found: false,
         totalLength: null,
         remainingLength: null,
+        lineRemainingLength: null,
         producedLength: null,
         percent: null,
       });
       continue;
     }
     for (const match of matches) {
+      const processes = rowProcesses(match);
+      const progress = rowProgress(match);
+      // What is left **for this line**, in kilometres of cable: its own
+      // stage's remainder, not the order's. The two are different numbers
+      // and both are true - a position can be stranded and still have its
+      // whole jacket to go - so the one a line is planned by is the one its
+      // own machine still has to run (asked for on 2026-10-13). Converted
+      // out of the stage's own unit where it has one (see
+      // remainingInCableKm). A line whose stage is unknown falls back to the
+      // order's remainder: there is no stage to read instead.
+      const lineStage = lineProcess ? processes[lineProcess] : null;
+      const lineRemainingLength = lineStage
+        ? remainingInCableKm({ totalLength: progress.totalLength }, lineStage)
+        : progress.remainingLength;
       rows.push({
         ...entry,
         lineProcess,
+        lineMaterialKeys,
         found: true,
         // CIP's own job number for this line. For an entry pasted as an
         // order number the paste had none, and this is where it comes from -
@@ -608,8 +929,9 @@ export async function getProductionProgress(entries, cipToken) {
         // Every stage this line goes through, each with what is left of it
         // and what it is out of - in that stage's own unit (see
         // stageFigures).
-        processes: rowProcesses(match),
-        ...rowProgress(match),
+        processes,
+        ...progress,
+        lineRemainingLength,
       });
     }
   }

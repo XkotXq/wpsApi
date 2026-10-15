@@ -1235,8 +1235,15 @@ CREATE INDEX IF NOT EXISTS idx_login_events_time ON login_events (logged_in_at D
 -- given number belongs to a real person, and it is a log, not a register.
 CREATE TABLE IF NOT EXISTS employee_roles (
   employee_no TEXT PRIMARY KEY CHECK (btrim(employee_no) <> ''),
-  role        TEXT NOT NULL CHECK (role IN ('supervisor', 'orderer', 'forklift', 'warehouse')),
+  role        TEXT NOT NULL CHECK (role IN ('supervisor', 'orderer', 'forklift', 'warehouse', 'test')),
   note        TEXT NOT NULL DEFAULT '',
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_by  TEXT NOT NULL DEFAULT ''
 );
+-- Replaced rather than left to the CREATE above, which only runs on a
+-- database that does not have this table yet: the list grew by 'test' on
+-- 2026-10-12 and an existing installation would otherwise keep refusing it
+-- (same pattern as orders_status_check).
+ALTER TABLE employee_roles DROP CONSTRAINT IF EXISTS employee_roles_role_check;
+ALTER TABLE employee_roles ADD CONSTRAINT employee_roles_role_check
+  CHECK (role IN ('supervisor', 'orderer', 'forklift', 'warehouse', 'test'));

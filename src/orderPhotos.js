@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Client } from "minio";
 import { pool } from "./db.js";
 import { ApiError } from "./errors.js";
+import { lanAddress } from "./lanAddress.js";
 
 // Order photos live in S3-compatible object storage (MinIO locally - see
 // ../dockerPostgresql/docker-compose.yml), not in Postgres and not on the
@@ -13,7 +14,17 @@ import { ApiError } from "./errors.js";
 // "localhost"/"minio": a photo is shown through a presigned URL generated
 // here, and that URL carries this endpoint's own host. On the warehouse LAN
 // that means the same machine address wpsApi itself is reached at.
-const endPoint = process.env.S3_ENDPOINT || "127.0.0.1";
+//
+// Which is why **leaving it unset finds that address** (lanAddress.js)
+// instead of falling back to 127.0.0.1, where only this machine's own
+// browser could ever open a photo. It was the one line of `.env` that had
+// to carry a machine's own IP, and therefore the one that was always stale
+// on a new computer or after a DHCP lease changed. Set it explicitly for a
+// real deployment, where the host is a domain name nothing can guess; the
+// startup log says which address is in use either way.
+const endPoint = process.env.S3_ENDPOINT?.trim() && process.env.S3_ENDPOINT.trim() !== "auto"
+  ? process.env.S3_ENDPOINT.trim()
+  : lanAddress() ?? "127.0.0.1";
 const port = Number(process.env.S3_PORT || 9000);
 const useSSL = process.env.S3_USE_SSL === "true";
 const accessKey = process.env.S3_ACCESS_KEY || "";
@@ -52,7 +63,10 @@ export async function ensurePhotoBucket() {
   try {
     const exists = await s3().bucketExists(PHOTO_BUCKET);
     if (!exists) await s3().makeBucket(PHOTO_BUCKET);
-    console.log(`Order photos: bucket "${PHOTO_BUCKET}" ready at ${endPoint}:${port}.`);
+    console.log(
+      `Order photos: bucket "${PHOTO_BUCKET}" ready at ${endPoint}:${port}` +
+        `${process.env.S3_ENDPOINT?.trim() && process.env.S3_ENDPOINT.trim() !== "auto" ? "" : " (address of this machine, detected)"}.`
+    );
   } catch (err) {
     console.error(`Order photos: storage unreachable at ${endPoint}:${port} - ${err.message}`);
   }

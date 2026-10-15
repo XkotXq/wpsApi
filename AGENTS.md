@@ -222,27 +222,137 @@ nothing stored, needs the caller's own `X-Cip-Token`.
     instead - see rowProgress): a stage's own planned amount is the
     denominator, so summing both sides keeps its percentage self-consistent.
     Every row seen so far has exactly one layer, so the two agree today.
+  - **Every row also carries `lineRemainingLength`**: what is left **for the
+    line this row was pasted on**, in kilometres of cable - its own stage's
+    remainder, converted out of that stage's unit (`remainingInCableKm`).
+    Not the same number as `remainingLength`, and both are true: a position
+    can be stranded and still have its whole jacket to go. A screen with room
+    for two figures shows both; one with room for one (the Excel export's
+    three columns) shows this one, because it is what the line is planned by.
+    A line whose stage is unknown falls back to the order's remainder - there
+    is no stage to read instead. Asked for on 2026-10-13.
+  - **A material's `remainingQuantity` is scaled by the stage that will
+    consume it, and which stage that is depends on which list it is in**
+    (`materialsForLineStage`, 2026-10-13):
+    - in a **stage cell** (`processes[key].materials`) each material keeps
+      **its own** stage's share - the cell is asked what that stage has left;
+    - in the **position's own list** (`materials`, what the plain view and
+      the export read) every material is scaled by **that line's** stage -
+      the list is read as "what does this line fetch for this order".
+    Scaling an ST line's FRP by what the whole order had left ordered FRP for
+    cable laid up days ago; it also cannot follow CIP's own `process`, which
+    files FRP under "SC", the stage that extrudes the tubes. The share is a
+    ratio inside one stage, so no unit conversion is involved: 240 of 800
+    tube-kilometres is the same 0.3 as 60 of 200 cable ones.
   - Each stage also carries **`inRunKm`**: whether its figures are the
     cable's own kilometres, so a caller knows when it may write "km" next to
     them. True when the stage plans exactly the run's length (SH, SZ, DP);
     false for SC, whose 264 against a 44 km run is not kilometres of cable.
-- **What a day's run takes of each FRP, and how many rolls that is**
-  (`frpRollsForDay`, sent as `frpRolls`). Two figures from the people who
-  run the lines (2026-10-09): a line gets through **55 km of cable a day**,
-  and an FRP roll holds **48.8 km** (rolls vary; this is the usual one and
-  the only length anything assumes).
+- **What a day's run takes of each material, and how many packages that
+  is** (`packagesForDay` / `packagesForDayByGroup`, sent as
+  `packages: { frp, tube, jacket }`). **One function counts every group**,
+  since only the packaging differs - `PACKAGE_RULES`: an FRP **roll holds
+  48.8 km**, a **bigbag of compound or granulate 500 kg**. With the third figure
+  from the people who run the lines (2026-10-09, revised twice since), a line
+  getting through **55 km of cable a day** - the average actually run (55,
+  then 60 on 2026-10-12, back to 55 on 2026-10-14) - that is
+  everything the count rests on. **This is what keeps a 150 km order from
+  being ordered in one go**: the count is what the day in front of the line
+  takes, and tomorrow is counted again. (48.8 km
+  is theirs; the 500 kg bag is the standard size the warehouse's own stock
+  is split into - the same figure wps's `lib/smMaterialsSeed.js` splits a
+  real CIP inventory export by.)
+  - **Those sizes are only defaults.** Bags and rolls really do differ per
+    material, so a caller may send `packageSizes: { "<itemNo>": <number> }`
+    and that item is counted by its own size instead
+    (`packageSizeFor`). wps types them in on the screen itself. Run
+    through `sanitisePackageSizes`, which **drops** a zero, a negative, a
+    non-number or an absurd size rather than refusing the request: one bad
+    cell in a settings panel must not cost the whole answer. Only the size
+    ever travels - how a package is counted stays here.
   - `daySharesForLine` hands the day out to the line's positions **in the
     order they were pasted**, since a line finishes what it is on before
     starting the next: 35 km left on one position and 45 on the next is 35
     of the first and 20 of the second, not 55 of either.
-  - Each share is turned into FRP by the material's own `perKm`, then into
-    rolls with `Math.ceil` - a day of 55 km at 1.017 is 55.9 km of FRP,
-    which is **two** rolls of 48.8.
-  - **Summed per line, never pooled**: parallel machines cannot share a
-    roll, so two lines on the same FRP need their own even if neither gets
-    through a whole one. Pooling would say one roll where two are needed.
-  - Only lines whose stage is counted in cable km take part (`inRunKm`): a
-    daily capacity in km means nothing against stranding's own figures.
+  - Each share is turned into material by that material's own `perKm`,
+    then into packages with `Math.ceil` - a day of 55 km at 1.017 is
+    55.935 km of FRP, which is **two** rolls of 48.8; the same day at 42 kg
+    of compound per km is 2310 kg, which is **five** bigbags of 500.
+  - **A line is only counted for what its own stage puts into the cable**
+    (`STAGE_MATERIAL_GROUPS` / `materialKeysForLineProcess`, 2026-10-12,
+    corrected 2026-10-13): **FRP** on the lines that lay the cable up (`sz` -
+    the ST lines), the **tube granulate** on the ones that extrude the tubes
+    (`sc` - the SC lines), the **jacket compound** on the ones that sheath it
+    (`sh` - SH and FC). A position carries the **whole cable's BOM** whichever
+    line it is pasted on, so without this an order pasted on both its
+    stranding and its sheathing line had its FRP counted twice and its
+    compound counted twice - and the sheathing line was sent a roll of FRP it
+    cannot use. **This cannot be read off the BOM's own process codes** (CIP
+    files FRP under "SC" while the ST line running it is stage "SZ"), which is
+    exactly how the FRP once vanished from the lines that need it - and then,
+    read the other way round, how it turned up on the SC lines, which only
+    extrude tubes (reported 2026-10-13). **What the SC stage is, its own
+    figures say**: it plans the run times the number of tubes (672 against a
+    168 km four-tube run), so it is a stage that makes tubes, not one that
+    lays a cable up. Every row also carries `lineMaterialKeys` so a screen
+    filters the same way instead of inventing its own answer; a line whose
+    stage is unknown keeps every kind.
+  - **A line's first position gets no FRP when under 15 km is left of it**
+    (`PACKAGE_RULES.frp.skipFirstBelowKm`, 2026-10-12): the roll already on
+    the payoff sees a tail that short out, and one fetched for it would come
+    back nearly full. **First position only** - what is on the machine now -
+    and **FRP only**: those kilometres still count towards everything else,
+    the compound included, because the line does produce them. A line that
+    is nothing but a short tail therefore has no FRP entry at all.
+  - **Whether a package can be shared is per group** (`PACKAGE_RULES`'
+    own `pooled`), and it is physical:
+    - an **FRP roll sits on one machine's payoff**, so it is counted **per
+      line**: two lines running the same FRP need their own rolls even if
+      neither gets through a whole one, and pooling would say one where two
+      are needed;
+    - a **bigbag feeds whatever asks for it**, so it is counted **once over
+      the whole day**: two orders needing 200 kg each are one bag, not two.
+      Told to us on 2026-10-12, after the first version counted bags per
+      line the way the rolls are counted and over-ordered them.
+    A pooled item's `lines[].packages` is therefore `null` - only the
+    amounts are per line - and the item carries `pooled` so a screen can
+    say which it is. **Nothing may sum `lines[].packages` to get the
+    total.**
+  - **A stage counted in its own units is converted back to cable first**
+    (`remainingInCableKm`, 2026-10-13). The daily capacity is a figure about
+    cable, so what it is handed out against has to be one too: secondary
+    coating plans the run times the tubes it extrudes, and that multiplier is
+    exactly `planned / totalLength`, so dividing by it gives back the cable
+    the stage has left (240 of its own units on a four-tube cable = 60 km).
+    Read off the row's own two figures, never off the cable type, which
+    nothing here parses. Until this existed an SC line dropped out of the
+    day's counting altogether and the granulate it extrudes was never ordered
+    for it; a stage with nothing to convert by still gets no share.
+    **The day's figure is assumed to hold for an SC line too** - it is the
+    only capacity anybody has given us; if a tube line's day is a different
+    number, `LINE_DAILY_KM` has to become per stage.
+  - A group with no entry in `PACKAGE_RULES` is simply not counted, and a
+    group nothing in the paste needs comes back as an empty array - which
+    the screen leaves out, the same rule `materialKeys` follows for the
+    columns.
+  - The response carries **`dailyKm`** alongside `packages`, so the screen
+    can head those panels with the day they rest on instead of keeping its
+    own copy of the figure.
+  - Each item carries **`lineCount`** - on how many production lines the
+    day needs that material (2026-10-14). It is a field of its own rather
+    than something a screen counts off `lines`, because what makes a line
+    one that needs the material is this rule: a line whose share rounds to
+    nothing (0.0004 kg) is left out of **both** `lines` and the count. It
+    is counted **the same way for a pooled group as for a roll** - how many
+    machines a material has to reach is a question about the floor, not
+    about packaging, so a bigbag that is one count for the day can still
+    have to be carried to four places.
+  - Each item (and each of its lines) also carries **`perKm`, weighted by
+    the cable the amount came from** - `needed / cableKm`, where `cableKm`
+    is the cable those day-shares account for (2026-10-12). It has to be
+    weighted: a material's rate is per *cable*, so averaging the rates of
+    two cables plainly would not reproduce `needed`. `cableKm` is sent only
+    so the figure is auditable; nothing reads it on its own.
 - **Consumption per kilometre of cable** (`perKmConsumption`, sent as a
   material's `perKm`) is **derived from the run, not read off CIP's own
   `qty`**: that field's base is not always the cable kilometre. FRP's 1.017
@@ -277,22 +387,34 @@ nothing stored, needs the caller's own `X-Cip-Token`.
     that saves a search per position and, because the progress search asked
     for every `workStatus`, it also works for a line CIP has already
     finished.
-  - **The two groups match on different signals, and swapping either one
-    breaks it** (`MATERIAL_GROUPS` in productionProgress.js):
+  - **The groups match on different signals, and swapping one breaks it**
+    (`MATERIAL_GROUPS` in productionProgress.js, listed in the order the
+    cable is built in: the strength member, the tubes around it, the jacket
+    over them):
     - **FRP by name.** Every item in the catalog's "FRP" category does have
       FRP in its name, but seven more are filed under "PL-MAT" ("FRP with
       steel wire reinforced Φ0.45mm×1.5mm"...) and "GLYCL" ("FRP 3.4mm/VIP",
       "GFRP/0.7*0.75mm"), all sold by the kilometre like the rest - a
       category check would miss seven of the sixty-three.
-    - **`jacket` by category**, exactly `"PE"` or `"LSZH"` - one job done by
-      two compounds, both in kg (15 PE items against 32 LSZH ones, so PE
-      alone would miss every flame-retardant build). "PE" as a *name*
-      fragment also matches every "TPEE"/"TPEE Masterbatch" row - 21 items
-      that are not PE - and the separate "PE Materbatch" category is
-      colourant *for* PE, not PE.
-    Both checked against the live catalog on 2026-10-08. The groups are
+    - **`jacket` by category**, exactly `"PE"` or `"LSZH"`: one job done by
+      two compounds (15 PE items against 32 LSZH ones, so PE alone would miss
+      every flame-retardant build).
+    - **`tube` by category**, `"PBTP"` or `"PBTB"`: the granulate the loose
+      tubes are extruded from, 4 items, in kg and in bigbags like the jacket
+      compound. **PBTB is the floor's own name for it** - the catalog only has
+      PBTP, so both are matched and nothing hangs on which turns up. Added
+      inside `jacket` on 2026-10-12 (asked for as "PBTB") and **split out on
+      2026-10-13**: bagged the same way, but **eaten by another machine**, so
+      in one group with the jacket it was listed for the SH lines and never
+      for the SC line that extrudes it.
+      Never a `… Masterbatch` category, in either group: "PE" as a *name*
+      fragment matches every "TPEE"/"TPEE Masterbatch" row (21 items that are
+      not PE), and "PE Materbatch" / the three "PBTP Masterbatch…" categories
+      (36 items) are colourant *for* the compound, not the compound.
+    All checked against the live catalog on 2026-10-08, PBTP on 2026-10-12. The groups are
     **not exclusive**: nothing downstream may assume a material is in at
     most one.
+
   - Matched against **our catalog's** own name and category
     (`smItemNames`/`smItemCategories`) and only for items this warehouse
     stocks (`knownSmItemNos`), never CIP's own description - otherwise the
@@ -387,6 +509,307 @@ CIP token is used, and no route passes one yet (`HANDLERS` is empty). Not
 known yet: whether CIP's access_token is opaque or a JWT, its lifetime, and
 which roles CIP returns - capture one real login response at work (mask the
 tokens) before designing role mapping.
+
+## WMS login (`src/wms.js`, `POST /api/wms/login`)
+**WMS is not CIP.** It is the plant's own warehouse system
+(`https://wms.yofc.com:8181`, `WMS_BASE_URL`), a different server with
+different accounts, and an issue list has to exist in it. The person at the
+desk is already signed into wps with their CIP account, which WMS knows
+nothing about, so wps asks them for a second login - that is what this route
+is for, and the whole of what it does. Added 2026-10-13 for wps's
+"Wydania WMS".
+- Proxied server-to-server for the same reason CIP's login is: WMS sends no
+  CORS headers, so no browser can call it.
+- **Behind `requireAuth`**, unlike `/api/auth/login`: the only caller is
+  wps's own server, which already holds the shared token, and a login proxy
+  nobody has to be let into is one fewer open door. Rate-limited the same
+  way (10 per 15 min per IP) - this route forwards whatever credentials it
+  is given straight to WMS, so nothing else stops repeated attempts.
+- **Nothing is stored here.** The session comes straight back to the caller;
+  wps keeps it in an httpOnly cookie of its own (`lib/wmsSession.js`), so it
+  lives exactly as long as the person at the desk is working. There is no
+  refresh - WMS gives nothing to refresh with, so the first call WMS refuses
+  is what says the session is gone, and the answer is to sign in again.
+- The request is the one WMS's own login page makes, captured 2026-10-13:
+  `POST /ilcwmsbase/userlogin/authlogin`,
+  `{ userNo, pwd, invokerParam: 1 }`, with `x-requested-with:
+  XMLHttpRequest` - without that header the framework can answer with its
+  own login HTML instead of JSON.
+- **Whether WMS accepted is not in its status code and not in a flag**:
+  it answers **HTTP 200 either way** and words a refusal as
+  `{"msg":"Login failed, please re-enter user and password!","code":"sys0049"}`
+  (captured live with an account that does not exist). What it really turns
+  on is **the session itself** - WMS hands over `WMS_AUTH` as a cookie and a
+  refusal *blanks* it (`WMS_AUTH=; Path=/; Secure; HttpOnly; SameSite=Lax`) -
+  so `wmsSessionFrom` accepts exactly when something came back to be
+  recognised by, which is the one signal a refusal cannot produce. Reading
+  `code` instead would mean guessing which of sys0049's siblings means yes,
+  and guessing wrong tells somebody whose password was right that it was
+  not. **A cookie with no value is therefore not a session** - that rule in
+  `sessionCookie` is what the whole thing rests on.
+  - A token in the body is accepted as well (`TOKEN_FIELDS`), because the
+    login's own request sends `credentials: "omit"` - WMS's page cannot be
+    keeping that cookie either, so a real success may carry the same thing
+    in its payload. Either will do; `wmsPost` sends back whatever it was
+    given.
+- **Its certificate is fine**: checked live 2026-10-13, port 8181 serves a
+  GlobalSign `*.yofc.com` certificate that validates normally and **expires
+  2026-11-23**. `WMS_TLS_INSECURE` exists for a renewal onto an internal CA
+  and is off by default - credentials travel over this, so trusting any
+  certificate is a decision somebody makes knowingly, in `.env`. Check that
+  expiry date before anybody reaches for the switch.
+- **Nothing credential-shaped is ever logged.** A refusal logs WMS's own
+  `msg`/`code`, an acceptance logs the reply's **field names** only - which
+  is how a token field WMS turns out to use gets added to `TOKEN_FIELDS`
+  without a single value of anybody's session being written down.
+- `node scripts/check-wms-login.mjs` pins all of it - the 200-with-a-refusal,
+  the blanked cookie, an unfamiliar success code, a split cookie, a body
+  token, the login page instead of an answer - against the real captured
+  replies and **needs neither WMS nor a password**.
+- **A later call sends the session twice**, as WMS's own pages do:
+  the `WMS_AUTH` cookie *and* the same id again in an `authentication-info`
+  header (`authInfoFor` - the body token if the login gave one, otherwise
+  the value out of the cookie; **inferred**, since the only login reply we
+  have captured is a refusal and carries no id). `app-module-number` goes
+  with it and is **per screen** - `WMS_MODULE_ISSUE` ("100400010001") is
+  the out-notice one.
+
+## WMS item lookup (`POST /api/wms/items`)
+Resolves item numbers against WMS's own item master, for wps's issue-list
+grid: a column of numbers is pasted and every row fills in its name,
+specification and unit. The request is the one WMS's `addoutnotice` screen
+makes, captured 2026-10-14:
+`POST /ilcwmsbase/bmitem/getbmitemlistbyparams`, body
+`{ condition: { orgNo, keyword, statusCode: 1, field: "itemNo", order: "asc" }, current: 1, size: 20 }`.
+- Body `{ orgNo, keywords: [...] }`, session in **headers** (`X-Wms-Cookie`,
+  `X-Wms-Auth`) - credentials belong where this repo's other per-user tokens
+  go (`X-Cip-Token`), not mixed into the query they authorise.
+- **The answer is keyed by the keyword that was asked**, never by the item
+  number WMS came back with, so a caller can match a reply to the grid row
+  it belongs to even when nothing matched.
+- **`statusCode: 1` is WMS's own**: only items in use, so a discontinued
+  material cannot be put on a new issue note.
+- WMS has no batch lookup, so a pasted list of 30 is 30 calls - four at a
+  time (`ITEM_LOOKUP_CONCURRENCY`, the same as the CIP order searches),
+  capped at `MAX_ITEM_KEYWORDS` (200) with a 400 rather than a request that
+  quietly loses the tail. Duplicates are asked once.
+- **A search is not a get, so which row the keyword meant is decided**
+  (`matchWmsItem`): an **exact** item-number match wins outright; a search
+  that returned exactly one row is taken; **anything else fills nothing**
+  and comes back `"ambiguous"` with the count. On an issue note a quietly
+  mis-picked material is the kind of mistake that leaves the warehouse.
+- **"Not logged in" is an HTTP 200 with no rows** - captured live on
+  2026-10-14 with an all-zeros session id:
+  `{"code":"000701","msg":"User not logged in"}`. Anything that just counts
+  rows reads that as "no such item", so a whole pasted list would come back
+  marked as unknown materials with nothing on screen about signing in.
+  `wmsNotLoggedIn` is checked **before** the rows are, and the route answers
+  401 `wms_session_expired` so wps can ask for the sign-in again. This is the
+  single most important thing to keep right in this section.
+- The reply's own shape has **not** been seen: reading it needed a live
+  session, and a session is somebody's password. So `wmsRowsFrom` accepts
+  every container this family of frameworks uses (`data.records`/`list`/
+  `rows`, `data` itself, the body itself) and `ITEM_FIELDS` lists several
+  spellings per field, first non-blank wins - an unexpected one costs a
+  blank cell, not the lookup. The **field names** of the first real reply
+  are logged once per server run (names only, never values); that is how
+  those guesses become the real spellings.
+- The raw WMS row is **not** passed on - only `{ itemNo, itemName, unit,
+  spec, category }`. A screen rendering whatever WMS happens to send breaks
+  the day WMS adds a field.
+- `node scripts/check-wms-login.mjs` covers all of it: the not-logged-in
+  reply against a genuinely empty search, every row container, the field
+  spellings, and each of `matchWmsItem`'s four verdicts.
+- Creating the note and listing what has been created are their own
+  sections below.
+
+## The issue header's own lists (`POST /api/wms/organizations`, `/warehouses`, `/document-classes`, `/pick-rules`)
+**Every field of WMS's issue-note header but the remark** is a list in WMS
+and must be one in wps too - a code typed by hand is one WMS rejects at
+save time with nothing on screen saying which field was wrong. All captured
+from `addoutnotice`, the last three on 2026-10-14 and the organizations on
+2026-10-15:
+
+| field | WMS path | body |
+| --- | --- | --- |
+| organization + source organization | `/ilcwmsbase/bmorg/getbmorglistbyparams` | paged, `statusCode: "1"`, **no `orgNo`** |
+| source + destination warehouse | `/ilcwmsbase/bmwarehouse/getbmwarehouselistbyparams` | paged, `statusCode: "1"` |
+| document class | `/ilcwmsbase/bmclassifytype/getBusinessClassifyTypeListByParams` | paged, `statusCode: "1"`, `bigModule: "0"` |
+| picking rule | `/ilcwmsbase/tooracle/getpickrule` | **not paged**: `{ condition: { organizationCode, dateFrom: "", dateTo: "", ruleName: "" } }` |
+
+- **Two pairs of fields read one list each.** Both warehouses: the
+  destination of an issue note is another of the same organization's
+  warehouses (confirmed 2026-10-14). Both organizations: the source
+  organization is another entry of the same `bmorg` list (2026-10-15).
+  Each pair is one request, not a second list that looks alike.
+- **The organizations are the one list not scoped by an organization** - it
+  is the list of them - so its captured body carries no `orgNo` at all.
+  That is why `pagedBody` takes the **whole** condition rather than an
+  organization plus extras, why `referenceRoute` has a `requiresOrg` flag
+  instead of demanding one from every list, and why the screen must not
+  clear or re-fetch it when the organization changes.
+  - It **does** check the session, unlike `getpickrule`: verified live
+    2026-10-15 with an all-zeros id (401 `wms_session_expired`). Two
+    endpoints of the same application differing on that is exactly why
+    `wmsNotLoggedIn` is checked on every one of them rather than on the
+    ones that seemed to need it.
+- **Each list brings its own body** (`listWmsReference` takes one;
+  `pagedBody` is what the two master-data lists share): the picking rules
+  are not paged and name the organization `organizationCode` where the
+  others page and call it `orgNo`. What the helper actually shares is the
+  part worth sharing - the 000701 check, the row-container search, the
+  field-name log and `referenceOptions` - so a fifth list inherits the
+  rules instead of re-deciding them.
+- Body `{ orgNo }`, session in the same two headers as `/items`, and
+  **`orgNo` is required with no default**: another organization's warehouse
+  or document class is one nobody here can put on a document, so an empty
+  one is a 400 rather than a guess.
+- `statusCode` is the **string** `"1"` in the paged two, where the item
+  search sends the number `1`, and `bigModule: "0"` is WMS's own (the
+  classify types belong to several modules and `0` is the set this screen
+  offers). That is what each screen sends; handing WMS back exactly its own
+  request is cheaper than finding out which spelling it is strict about.
+- `size: 1000` is WMS's own, i.e. "all of them": a plant has tens of
+  warehouses and a handful of document classes, so each list is one call and
+  then a select, not a search box over something that fits on screen.
+- **Both answer `{ options: [{ code, name }] }`**, not WMS's rows: the
+  screen does not have to know which WMS table an option came out of, and
+  the raw row is not passed on for the reason the items' is not.
+  `referenceOptions` drops a row with **no code** (an option whose value
+  cannot be submitted is worse than a shorter list), keeps one with no name
+  (pickable by code), deduplicates by code and keeps WMS's own order.
+- The **000701 rule applies here too** and for a sharper reason than on the
+  items: a dead session answers 200 with no rows, which reads as "this
+  organization has no warehouses" - an empty select with nothing on screen
+  to act on. `wmsNotLoggedIn` is checked before the rows and the route
+  answers 401 `wms_session_expired`. Verified live on 2026-10-14 against
+  both paths with an all-zeros session id.
+- Each list's field names are logged once per server run, names only
+  (`[wms] warehouse list reply fields: ...`, and so on), which is what turns
+  `WAREHOUSE_FIELDS`' and `CLASSIFY_TYPE_FIELDS`' candidate spellings into
+  the real ones.
+- **The picking rules are the one reply we have actually seen**, because
+  `getpickrule` turns out **not to check the session at all**: an all-zeros
+  one gets the same list (2026-10-14). One row of org 460, verbatim but for
+  the timestamp:
+  `{ pickRuleName: "YOFC POL pick", organizationCode: "460", autoShipConfirmFlag: "N", pickRuleId: "510", lastUpdateDate: ... }`
+  under `data.records`, in an envelope whose **success** code is `"000001"`
+  with `msg: "成功"` - one more reason no `code` value may be read as
+  success or failure anywhere here. `PICK_RULE_FIELDS` is therefore
+  captured, not guessed; it keeps `codeFromName` as a fallback so a rule
+  sent without an id is still selectable rather than silently missing, and
+  that fallback is **this list's alone** - a warehouse with no number is a
+  row nothing can be done with.
+  - Do not read that endpoint's openness as licence to drop the 000701
+    check elsewhere: it is harmless only because the answer is the same
+    either way.
+- Still free text: **remark** alone, which is a sentence somebody writes.
+
+## Creating the issue note (`POST /api/wms/issue-notes`)
+The one WMS call here that **changes anything**. WMS's own save, captured
+2026-10-14: `POST /ilcwmswms/outnoticehead/addoutnoticehead` - note the
+different application, `ilcwmswms`, where every read above is
+`ilcwmsbase`.
+- **A `detailList` row is WMS's own item row, sent straight back**: not a
+  position built from five fields but the whole `bmitem` record - every
+  `guestCol`, `lotRuleNo`, `shelflife`, `itemPrice` - plus `applyQty` (a
+  **string**), `cellNo`, twelve empty `lotAtt01..12`, `combinationLotNo`
+  and `itemFlag: "1"`. So this route **looks every item up again** and
+  sends back what WMS answers with (`wmsIssueDetailRow`). Two consequences
+  worth keeping: the browser never holds those rows (`/items` strips the
+  raw row out of its answer), and what the document carries cannot have
+  drifted from what WMS currently has.
+  - The row keeps **WMS's own `id`** when it has one - this framework keys
+    records by a 32-hex id and the captured detail row carries exactly such
+    a value - and is given a fresh one only when WMS sent none.
+- **The header sends codes and their labels, and not in the obvious
+  direction**: `pickRule` is the rule's **name**, while `pickRuleName` is
+  `"510-YOFC POL pick"` - its id and name joined. `classifyType` is the
+  code with `classifyTypeName` beside it. The screen therefore sends only
+  the codes it picked and **the labels are resolved here** against WMS's
+  own lists; `autoShipConfirmFlag` likewise comes off the chosen picking
+  rule's record rather than being defaulted.
+- `wmsIssueHeadPayload` sends **every key the capture sends, in its order,
+  including the sixteen it sends empty**. A key WMS's own screen always
+  sends is not one to leave out on the theory that it is optional, and
+  `check-wms-login.mjs` asserts the key list against the capture.
+- Inferred, and the only thing here that is: **`inCellNo`** - the capture
+  puts the destination warehouse's own code there with a label of
+  `"<code>-Cache location"`, i.e. its default cell, and the request that
+  lists the cells has not been captured. With no cell chosen the
+  destination warehouse stands in and the label is left to WMS.
+  `docNature: "20"` and `standardCol01: "0"` are constants in the capture
+  and nothing on the screen sets either.
+- **What it refuses matters as much as what it sends.** A header missing
+  any of organization / bill date / document class / both warehouses is a
+  400; a position with no quantity is a 400; a position whose item number
+  is not an **exact** match in WMS's item master stops the whole list
+  (422 `wms_unknown_items`) - a mis-picked material on an issue note
+  leaves the warehouse. A dead session is caught at the item lookup, so
+  **nothing is posted** (verified live 2026-10-14 with an all-zeros
+  session: 401 `wms_session_expired`, no document).
+- **Only `code: "000001"` is a save.** That is the one success code this
+  family of endpoints has ever shown us (`getpickrule`'s reply), so
+  anything else is a 422 `wms_rejected` carrying **WMS's own message**.
+  Reporting a document as created when it was not is the one outcome
+  nobody can recover from; a refusal somebody can read is recoverable.
+  When a second success code turns up, widen `WMS_OK_CODE` - do not
+  loosen this into "anything that is not an error".
+- The number WMS gave the document comes back as `outNoticeNo`
+  (`createdOutNoticeNo` looks where that family of replies puts it) and is
+  **not invented** when the reply carries none.
+
+## The issue notes already in WMS (`POST /api/wms/issue-notes/search`)
+The read side of the same screen, captured 2026-10-15:
+`POST /ilcwmswms/outnoticehead/getoutnoticeheadlistbyparams` - the save's
+own application again, not the `ilcwmsbase` every header list lives in.
+**This is what wps's table shows**, which is what makes that table survive
+a reload and what makes a document raised on WMS's own screen appear in it:
+wps is one of two ways into the same documents, never the record of them.
+- Its condition is **long and almost entirely empty** - fifteen search
+  fields WMS's own screen sends blank, which is how it asks for everything
+  - and all of them are sent, the same rule the save follows.
+  `check-wms-login.mjs` asserts the key list against the capture.
+- `field: "updateDate"` + `order: "desc"` is **newest first**, the only two
+  values here that are a decision rather than a copy. `standardCol01: "0"`
+  is the same constant the save sends, so this lists the documents that
+  save creates and not another kind.
+- **WMS's own screen copies three of its headers into the condition**
+  (`Authentication-Info`, `Accept-Language`, `App-Module-Number`) - its
+  ajax layer merges them in - and they are sent back the same way. The
+  session id there is the one already travelling in the same request's
+  cookie and header, so it is not a second disclosure; nothing logs a
+  request body.
+- **A blank `orgNo` is every organization**, exactly as the capture asks,
+  and the route does not demand one: a document somebody is looking for is
+  still one they are looking for when it was raised elsewhere. The opposite
+  of the create route, which demands the organization because it decides
+  what the document *is*.
+- `size` is clamped to `WMS_ISSUE_NOTE_MAX_PAGE_SIZE` (200) rather than
+  refused - a page size is a screen's own business and a silly one is not
+  worth an error, but somebody else's server is not asked for ten thousand
+  rows either.
+- **The 000701 rule applies**, and here it is at its sharpest: a dead
+  session answers 200 with no rows, which reads as "no documents" - and an
+  empty table is exactly what somebody would believe. Verified live
+  2026-10-15 with an all-zeros id (401 `wms_session_expired`).
+- The reply's shape is **not** captured, so `ISSUE_NOTE_FIELDS` lists
+  candidate spellings per field and the row is flattened to
+  `{ outNoticeNo, billDate, createdAt, createdBy, status, documentClass,
+  warehouse, positions, remark }` - never WMS's own row, for the reason
+  `/items` does not pass one on. These are **better than guesses** though:
+  the save's captured payload names the columns of this very table
+  (`outNoticeNo`, `billDate`, `classifyType`, `warehouseNo`, `remark`) and
+  `updateDate` is proven to exist by being what the list sorts on. The
+  people and the counts have no such backing, so they carry several
+  spellings and a blank costs a cell, not the list.
+  - **A count WMS did not send stays null, never 0**: `Number(null)` is 0,
+    and a document shown as having no positions is a claim about it rather
+    than a missing cell. (Caught by the check script, not by review.)
+  - A row with no document number is dropped: it cannot be looked up in
+    WMS and cannot be told from the next one on screen.
+- The field names of the first real reply are logged once per server run,
+  names only, as every other list here does.
 
 ## The catalog names a material (`src/smItemValidation.js`)
 `sm_catalog` is the authority for a material's name. `upsertSmItem` and
@@ -678,6 +1101,29 @@ Tables: `locations` (places; SH01-07, ST01-13, FC01-03, FL01 are the fixed produ
   zamówień" = `done` + `cancelled` (`STATUS_SETS`). A `delivered` order
   stays in the active list until it is really closed.
 
+## Nothing in here carries a machine's address (`src/lanAddress.js`)
+Setting this system up on another computer used to mean finding every
+place one machine's IP had been written down - and they went stale on this
+one too, every time DHCP handed out a different lease. The rule now is
+that **an address is derived, not configured**, and the few things that
+genuinely cannot be say so:
+- `S3_ENDPOINT` empty (or `auto`) means **this machine's own LAN
+  address**, found by `lanAddress()`. It is the one setting that can never
+  be localhost: a photo is fetched by the phone straight from storage,
+  through a presigned URL that carries this host. The startup line says
+  which address was picked, because a machine with several NICs is a guess
+  worth showing - private ranges are preferred in the order 192.168, 10,
+  then 172.16/12, where Docker and WSL keep bridges no phone can reach.
+- The same file runs as a one-liner (`node src/lanAddress.js`), which is
+  how `tools/build-apk.*` bake an address into the Flutter apps without a
+  second copy of that heuristic.
+- The browsers answer it themselves: wps and stock call the API on the host
+  their own page came from (see their `browserApi.js`), so neither bundle
+  holds an address at all.
+- An explicit value always wins, and a real deployment needs one - see
+  `deploy/README.md`. The whole new-machine path is `SETUP.md` at the repo
+  root.
+
 ## Photos (`src/orderPhotos.js`)
 Built and in use (this was roadmap step 4). **Storage is S3-compatible
 object storage** - MinIO locally, see `../dockerPostgresql/AGENTS.md`; the
@@ -714,9 +1160,26 @@ whole migration. `order_photos` keeps only the key, never the bytes.
 
 ## Roadmap (agreed direction, in order)
 1. **Per-user auth.** After a successful CIP login, wpsApi issues its own
-   short-lived JWT (employee number from CIP + a role from a local role-mapping
-   table: orderer / forklift / supervisor). Today there is only the shared
-   `API_TOKEN` (see Auth). Prerequisite for the next step.
+   short-lived JWT (employee number from CIP + a role from a local
+   role-mapping table - `employee_roles`, filled in from wps's
+   "Uprawnienia"). Today there is only the shared `API_TOKEN` (see Auth)
+   and **nothing enforces a role anywhere**. Prerequisite for the next
+   step.
+   - **`EMPLOYEE_ROLES` is `["forklift"]` alone** (narrowed 2026-10-15,
+     on request): one role plus **no role**, where no role is the absence
+     of a row and not a value. `supervisor`, `orderer`, `warehouse` and
+     `test` were on that list until then; since nothing enforced them,
+     narrowing it costs no behaviour, while a screen offering four roles
+     nobody hands out reads as a decision about who may do what - which
+     is exactly what it was not. Whatever enforces roles later must still
+     treat an employee with no row as having **no** role rather than
+     every role.
+   - The `employee_roles` CHECK in `schema.sql` deliberately still allows
+     all five: it is a backstop against garbage, not the catalogue, and
+     tightening it would refuse rows that already exist. `EMPLOYEE_ROLES`
+     is the one thing that decides what may be handed out, because the
+     route and the screen both read it (verified live 2026-10-15:
+     `PUT /employee-roles/:no` with `supervisor` is a 400).
 2. **Hasura on the existing Postgres** - started (2026-09-29): a
    `graphql-engine` service now runs alongside `postgres` in
    `../dockerPostgresql/docker-compose.yml`, same database, admin secret in

@@ -2,7 +2,10 @@ import { Router } from "express";
 import Fuse from "fuse.js";
 import { cipOrderBomForRow, getCipOrderMaterials } from "../cip.js";
 import {
-  frpRollsForDay,
+  materialsForLineStage,
+  packagesForDayByGroup,
+  LINE_DAILY_KM,
+  sanitisePackageSizes,
   getProductionProgress,
   groupBomMaterials,
   groupBomMaterialsByProcess,
@@ -371,10 +374,24 @@ const positionKey = (row) => `${row.erpNumber}|${row.orderId ?? ""}`;
  *
  * Quantities come straight from CIP's BOM (`requiredQuantity` - the whole
  * run's need, in the catalog's own unit). `remainingQuantity` is that
- * scaled by how much of the run is still to make, which is the number
- * somebody planning the next shift actually wants: it is derived as a
- * **proportion of the required amount**, not by multiplying CIP's per-km
- * `qty`, so it holds whatever unit that material is counted in.
+ * scaled by **what is still to make at the stage that consumes it**, which
+ * is the number somebody planning the next shift actually wants: it is
+ * derived as a **proportion of the required amount**, not by multiplying
+ * CIP's per-km `qty`, so it holds whatever unit that material is counted in.
+ *
+ * Which stage that is depends on which of the two lists the material is in,
+ * and they are not the same question:
+ *   - a **stage cell** (`processes[key].materials`) asks what that stage has
+ *     left, so each material is scaled by its own stage, CIP's `process`;
+ *   - the **position's own list** (`materials`) is what the line this row
+ *     was pasted on has to fetch, so it is scaled by **that line's** stage
+ *     (`lineProcess`) - asked for on 2026-10-13, and the only honest answer
+ *     once the lists differ: stranding can be finished while sheathing has
+ *     half the run left, and scaling an ST line's FRP by what the whole
+ *     order has left ordered FRP for cable that was laid up days ago. It is
+ *     also why this cannot follow CIP's own `process` here, which files FRP
+ *     under "SC" - the stage that extrudes the tubes, not the one that pays
+ *     the FRP off.
  */
 async function attachBomMaterials(rows, cipToken) {
   const targets = rows.filter((row) => row.found && row.orderId);
@@ -406,15 +423,14 @@ async function attachBomMaterials(rows, cipToken) {
     const materials = byKey.get(positionKey(row));
     if (!materials) return row;
 
-    // How much of the run is still to make, as a fraction. Used only for a
-    // material whose own stage is unknown - everything else is scaled by
-    // the stage that actually consumes it (below), which is the honest
-    // number: stranding can be finished while sheathing has half the run
-    // left, and one figure cannot be right for both.
+    // How much of the run is still to make, as a fraction. The last
+    // fallback only - for a material whose own stage is unknown, on a line
+    // whose stage is unknown too.
     const runScale =
       row.totalLength > 0 && row.remainingLength !== null && row.remainingLength !== undefined
         ? row.remainingLength / row.totalLength
         : null;
+
 
     const catalogued = materials
       .filter(
@@ -449,10 +465,15 @@ async function attachBomMaterials(rows, cipToken) {
         };
       });
 
-    // The stage cells carry the materials that stage consumes; the
-    // position-level grouping stays for the plain view, which has no stage
-    // columns to put them in.
+    // The stage cells carry the materials that stage consumes, each scaled
+    // by its own stage above.
     const byProcess = groupBomMaterialsByProcess(catalogued);
+
+    // The position's own list is read as "what this line fetches for this
+    // order", so its amounts are the line's stage, not the material's (see
+    // materialsForLineStage - the rule lives there so it can be asserted
+    // without a CIP token).
+    const forLine = materialsForLineStage(catalogued, row);
     const processes = Object.fromEntries(
       Object.entries(row.processes ?? {}).map(([key, figures]) => [
         key,
@@ -460,7 +481,7 @@ async function attachBomMaterials(rows, cipToken) {
       ])
     );
 
-    return { ...row, processes, materials: groupBomMaterials(catalogued) };
+    return { ...row, processes, materials: groupBomMaterials(forLine) };
   });
 }
 
@@ -486,6 +507,11 @@ router.post(
   "/progress",
   asyncHandler(async (req, res) => {
     const text = String(req.body?.text ?? "");
+    // Per-item package sizes the operator set on the screen ("Opakowania"),
+    // keyed by item number. Only a default is overridden; the arithmetic and
+    // the defaults themselves stay here (see PACKAGE_RULES), so no client
+    // can decide how a bag is counted - only how much it holds.
+    const packageSizes = sanitisePackageSizes(req.body?.packageSizes);
     const cipToken = readCipToken(req);
     const entries = parsePastedProgressList(text);
     if (!entries.length) {
@@ -519,10 +545,14 @@ router.post(
       // Only the material kinds something in this paste actually needs,
       // so a group nothing needs never becomes a column.
       materialKeys: presentMaterialKeys(withMaterials),
-      // What a day's run takes of each FRP and how many rolls that is -
-      // per line, never pooled, since parallel machines cannot share a roll
-      // (see frpRollsForDay).
-      frpRolls: frpRollsForDay(withMaterials),
+      // What a day's run takes of each FRP, granulate and jacket compound, and
+      // how many rolls / bigbags that is - per line, never pooled, since
+      // parallel machines cannot share a roll or a bag (see
+      // packagesForDay).
+      packages: packagesForDayByGroup(withMaterials, { sizes: packageSizes }),
+      // The day those counts are for, so the screen can head the panels with
+      // what they rest on instead of keeping a second copy of the figure.
+      dailyKm: LINE_DAILY_KM,
     });
   })
 );

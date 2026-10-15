@@ -21,7 +21,9 @@ import smCatalogRouter from "./routes/smCatalog.js";
 import smItemsRouter from "./routes/smItems.js";
 import smOperationsRouter from "./routes/smOperations.js";
 import smSpoolsRouter from "./routes/smSpools.js";
+import wmsRouter from "./routes/wms.js";
 import { cipSyncEnabled, logCipSyncMode } from "./cip.js";
+import { logWmsMode } from "./wms.js";
 
 const app = express();
 app.use(cors());
@@ -49,6 +51,10 @@ api.use("/employee-roles", employeeRolesRouter);
 api.use("/short-lengths", shortLengthsRouter);
 api.use("/sm-operations", smOperationsRouter);
 api.use("/sm-spools", smSpoolsRouter);
+// WMS is the plant's own warehouse system, not CIP - one route, its login
+// proxy (src/wms.js). Before the generic /:material catch-all below, which
+// would otherwise swallow it.
+api.use("/wms", wmsRouter);
 // Generic item routes last - every other :material key is matched here.
 api.use("/:material", loadMaterial, itemsRouter);
 
@@ -59,6 +65,7 @@ const port = process.env.PORT || 4000;
 app.listen(port, () => {
   console.log(`API listening on :${port}`);
   logCipSyncMode();
+  logWmsMode();
   startAutoAcceptSweep();
   ensurePhotoBucket();
 });

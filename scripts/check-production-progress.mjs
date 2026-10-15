@@ -13,9 +13,14 @@
 
 import {
   groupBomMaterials,
+  materialsForLineStage,
   groupBomMaterialsByProcess,
   daySharesForLine,
-  frpRollsForDay,
+  materialKeysForLineProcess,
+  remainingInCableKm,
+  packagesForDay,
+  packagesForDayByGroup,
+  sanitisePackageSizes,
   isFrpName,
   presentMaterialKeys,
   parseErpNumber,
@@ -334,8 +339,23 @@ check(
 );
 check("TPEE is not a jacket compound, even though its name contains PE", !grouped.jacket.some((m) => /TPEE/.test(m.name)), JSON.stringify(grouped.jacket.map((m) => m.name)));
 check('"PE Materbatch" is a colourant, not a jacket compound', !grouped.jacket.some((m) => m.category === "PE Materbatch"));
-check("fibre is in neither group", !grouped.frp.concat(grouped.jacket).some((m) => /Fiber/.test(m.name)));
-check("a position needing none of a kind gets an empty array, not a missing key", JSON.stringify(groupBomMaterials([])) === '{"frp":[],"jacket":[]}', JSON.stringify(groupBomMaterials([])));
+check("fibre is in no group at all", !grouped.frp.concat(grouped.jacket, grouped.tube).some((m) => /Fiber/.test(m.name)));
+check("a position needing none of a kind gets an empty array, not a missing key", JSON.stringify(groupBomMaterials([])) === '{"frp":[],"tube":[],"jacket":[]}', JSON.stringify(groupBomMaterials([])));
+
+// The tube granulate is bagged like the jacket compound but eaten by another
+// machine, so it is its own group (2026-10-13 - in the jacket group it was
+// listed for the sheathing lines and never for the SC line that extrudes it).
+const tubes = groupBomMaterials([
+  { itemNo: "993907000000047", name: "PBTP for micro cable tube", category: "PBTP" },
+  { itemNo: "993907000000167", name: "BASF PBT(6550LN)", category: " pbtp " },
+  { itemNo: "993907000000999", name: "PBT under the floor's own spelling", category: "PBTB" },
+  { itemNo: "993901000000318", name: "indoor LSZH subunit masterbatch 50-YE-3126 yellow", category: "PBTP Masterbatch" },
+  { itemNo: "993901000000009", name: "HDPE Black/SCG", category: "PE" },
+]);
+check("PBTP is the tube granulate, whatever the case and spacing", tubes.tube.length === 3, JSON.stringify(tubes.tube.map((m) => m.itemNo)));
+check("PBTB is the same thing under the floor's own name", tubes.tube.some((m) => m.category === "PBTB"));
+check("a PBTP masterbatch is colourant, not granulate", !tubes.tube.some((m) => /Masterbatch/.test(m.category)));
+check("and the jacket compound is not granulate either", tubes.jacket.length === 1 && tubes.tube.every((m) => m.category !== "PE"));
 
 // The groups are not exclusive - nothing downstream may assume they are.
 const both = groupBomMaterials([{ itemNo: "1", name: "Coated FRP sheath", category: "PE" }]);
@@ -353,7 +373,7 @@ check(
 check("and the columns keep their defined order", presentMaterialKeys([{ materials: { jacket: [{}], frp: [{}] } }]).join(",") === "frp,jacket");
 
 // ─── A day's run: what it takes of each FRP, and how many rolls ─────────────
-// A line gets through 55 km of cable a day and works its positions in the
+// A line gets through 60 km of cable a day and works its positions in the
 // order they were pasted; a roll holds 48.8 km of FRP and cannot be shared
 // between two machines running at the same time.
 console.log("\nFRP na zmianę:");
@@ -362,8 +382,30 @@ const dayStage = (remaining, inRunKm = true) => ({ remaining, planned: 200, perc
 const onLine = (line, remaining, itemNo, name, perKm = 1.017, inRunKm = true) => ({
   line,
   lineProcess: "sz",
+  totalLength: 200,
   processes: { sz: dayStage(remaining, inRunKm) },
-  materials: { frp: [{ itemNo, name, unit: "KM", perKm }], jacket: [] },
+  materials: { frp: [{ itemNo, name, unit: "KM", perKm }], tube: [], jacket: [] },
+});
+
+// The same, for a jacket compound: counted in kilograms and packed in
+// bigbags rather than on rolls.
+const sheathing = (line, remaining, itemNo, name, perKm) => ({
+  line,
+  lineProcess: "sh",
+  totalLength: 200,
+  processes: { sh: dayStage(remaining, true) },
+  materials: { frp: [], tube: [], jacket: [{ itemNo, name, unit: "KG", perKm }] },
+});
+
+// And for the tube granulate: an SC line, whose own stage is counted per
+// tube rather than per kilometre of cable - four tubes here, so 240 of its
+// own units are 60 km of cable, i.e. more than a day of it.
+const coating = (line, remainingTubeKm, itemNo, name, perKm, tubes = 4) => ({
+  line,
+  lineProcess: "sc",
+  totalLength: 200,
+  processes: { sc: { remaining: remainingTubeKm, planned: 200 * tubes, percent: 0, inRunKm: false } },
+  materials: { frp: [], tube: [{ itemNo, name, unit: "KG", perKm }], jacket: [] },
 });
 
 // Their own example: 35 km left on one position, 45 km on the next.
@@ -376,44 +418,241 @@ check(
 );
 check("and it adds up to the day, never to more", shares.reduce((a, s) => a + s.km, 0) === 55);
 
-const oneLine = frpRollsForDay(st01);
+const oneLine = packagesForDay(st01);
 check("a day of 55 km takes 55.935 km of FRP", oneLine[0].needed === 55.935, String(oneLine[0].needed));
-check("which is two rolls of 48.8, not one", oneLine[0].rolls === 2, String(oneLine[0].rolls));
+check("which is two rolls of 48.8, not one", oneLine[0].packages === 2, String(oneLine[0].packages));
 
 // Two lines on the same FRP cannot share a roll, so rolls add up per line.
-const manyLines = frpRollsForDay([
+const manyLines = packagesForDay([
   ...st01,
   onLine("ST02", 90, "A", "FRP 1.6xb"),
   onLine("ST04", 70, "B", "FRP 2.5/VIP"),
 ]);
 const shared = manyLines.find((r) => r.itemNo === "A");
-check("rolls are counted per line and never pooled", shared.rolls === 4, String(shared.rolls));
+check("rolls are counted per line and never pooled", shared.packages === 4, String(shared.packages));
 check(
   "and each line keeps its own share",
-  shared.lines.map((l) => l.line + ":" + l.rolls).join(",") === "ST01:2,ST02:2",
+  shared.lines.map((l) => l.line + ":" + l.packages).join(",") === "ST01:2,ST02:2",
   JSON.stringify(shared.lines)
 );
-check("a second FRP is counted on its own", manyLines.find((r) => r.itemNo === "B").rolls === 2);
+check("a second FRP is counted on its own", manyLines.find((r) => r.itemNo === "B").packages === 2);
 check("the biggest demand comes first", manyLines[0].itemNo === "A");
 
-// Less than a roll still needs a roll.
-const small = frpRollsForDay([onLine("ST01", 10, "A", "FRP 1.6xb")]);
-check("ten kilometres is one roll, not a fraction of one", small[0].rolls === 1 && small[0].needed === 10.17, JSON.stringify(small[0]));
-
-// Stranding is not counted in cable km, so a daily capacity in km cannot be
-// handed out against its figures at all.
+// On how many lines the day needs each material - the figure the screen
+// shows beside it, because "this one has to reach four machines" is a
+// different morning to plan than the same kilograms on one.
 check(
-  "a stage that is not in cable km gets no share of the day",
+  "a material says how many lines the day needs it on",
+  shared.lineCount === 2,
+  String(shared.lineCount)
+);
+check(
+  "a material on one line says one, not none",
+  manyLines.find((r) => r.itemNo === "B").lineCount === 1
+);
+check(
+  "the count is the breakdown it is printed next to",
+  manyLines.every((item) => item.lineCount === item.lines.length)
+);
+// A pooled group shares its bags, which says nothing about how many
+// machines the bags have to be carried to.
+const pooledLines = packagesForDay(
+  [sheathing("SH01", 30, "J", "PE black", 42), sheathing("SH02", 30, "J", "PE black", 42)],
+  { group: "jacket" }
+);
+check(
+  "a pooled material still counts its lines",
+  pooledLines[0].pooled === true && pooledLines[0].lineCount === 2,
+  JSON.stringify({ pooled: pooledLines[0].pooled, lineCount: pooledLines[0].lineCount })
+);
+// The one way a line can appear with nothing on it: a share small enough
+// that the amount rounds away. It is not a line the material has to reach.
+check(
+  "a line whose share rounds to nothing is not counted",
+  packagesForDay([sheathing("SH01", 0.0001, "J", "PE black", 0.0001)], { group: "jacket" }).every(
+    (item) => item.lineCount === item.lines.length && item.lines.every((line) => line.needed > 0)
+  )
+);
+
+// Less than a roll still needs a roll.
+const small = packagesForDay([onLine("ST01", 20, "A", "FRP 1.6xb")]);
+check(
+  "twenty kilometres is one roll, not a fraction of one",
+  small[0].packages === 1 && small[0].needed === 20.34,
+  JSON.stringify(small[0])
+);
+
+// ── The tail on the machine: no roll fetched for it ───────────────────────
+// A line's **first** position, under 15 km, is what the payoff is already
+// running; a roll carried out for it would come back nearly full (given
+// 2026-10-12). FRP only, first position only - the day's cable still counts
+// towards everything else.
+const shortFirst = [onLine("ST01", 10, "A", "FRP 1.6xb"), onLine("ST01", 40, "A", "FRP 1.6xb")];
+check(
+  "a short first position gets no FRP of its own",
+  packagesForDay(shortFirst)[0].needed === 40.68,
+  JSON.stringify(packagesForDay(shortFirst)[0]?.needed)
+);
+check("though the day still holds all of it", daySharesForLine(shortFirst).reduce((a, s) => a + s.km, 0) === 50);
+check(
+  "a short position that is not the first is counted as usual",
+  packagesForDay([onLine("ST01", 40, "A", "FRP 1.6xb"), onLine("ST01", 10, "A", "FRP 1.6xb")])[0].needed === 50.85
+);
+check(
+  "and the compound is never skipped for being short",
+  packagesForDay([sheathing("SH01", 10, "J", "PE black", 42)], { group: "jacket" })[0].needed === 420
+);
+
+// ── Bigbags: the same arithmetic, pooled, against a 500 kg bag ────────────
+// 55 km of cable at 42 kg of compound per km is 2310 kg, which is five
+// bigbags of 500 - four would leave 310 kg of jacket unmade.
+const jacketDay = packagesForDay([sheathing("SH01", 90, "J", "PE black", 42)], { group: "jacket" });
+check("a day of 55 km takes 2310 kg of compound", jacketDay[0].needed === 2310, String(jacketDay[0].needed));
+check("which is five bigbags of 500, not four", jacketDay[0].packages === 5, String(jacketDay[0].packages));
+check("and it is reported in the material's own unit", jacketDay[0].unit === "KG", jacketDay[0].unit);
+check("the size it was counted by rides along", jacketDay[0].packageSize === 500, String(jacketDay[0].packageSize));
+
+// **A bag covers whatever asks for it**, unlike a roll on one machine's
+// payoff: two orders needing 200 kg each are one bag, not two. This is the
+// whole difference between the groups (PACKAGE_RULES' own `pooled`).
+const twoOrders = [sheathing("SH01", 10, "J", "PE black", 20), sheathing("SH02", 10, "J", "PE black", 20)];
+const pooled = packagesForDay(twoOrders, { group: "jacket" });
+check("two orders of 200 kg are 400 kg", pooled[0].needed === 400, String(pooled[0].needed));
+check("and one bigbag covers both", pooled[0].packages === 1, String(pooled[0].packages));
+check("so a pooled group counts nothing per line", pooled[0].lines.every((l) => l.packages === null));
+check("though each line still says what it takes", pooled[0].lines.map((l) => l.needed).join(",") === "200,200");
+check("and it says it is pooled, so the screen can too", pooled[0].pooled === true);
+
+// The same two orders in FRP would be two rolls - parallel machines cannot
+// share one. The two rules side by side, on purpose.
+check("a roll is still counted per line", packagesForDay([onLine("ST01", 20, "A", "FRP"), onLine("ST02", 20, "A", "FRP")])[0].packages === 2);
+check("and says so", packagesForDay(st01)[0].pooled === false);
+
+// Bags and rolls differ per material, so the size can be set per item.
+const bigBags = packagesForDay([sheathing("SH01", 90, "J", "PE black", 42)], {
+  group: "jacket",
+  sizes: { J: 1000 },
+});
+check("a 1000 kg bag takes three, not five", bigBags[0].packages === 3, String(bigBags[0].packages));
+check("and the answer says which size it used", bigBags[0].packageSize === 1000, String(bigBags[0].packageSize));
+check(
+  "a size set for another item leaves this one on its default",
+  packagesForDay([sheathing("SH01", 90, "J", "PE black", 42)], { group: "jacket", sizes: { OTHER: 1000 } })[0]
+    .packages === 5
+);
+
+// An unusable size falls back to the default rather than refusing the answer.
+check("blank, zero, negative and absurd sizes are dropped", JSON.stringify(sanitisePackageSizes({ a: 0, b: -5, c: "x", d: 1e9, "": 500 })) === "{}", JSON.stringify(sanitisePackageSizes({ a: 0, b: -5, c: "x", d: 1e9, "": 500 })));
+check("a real size survives, as a number", sanitisePackageSizes({ "993901000000009": "1250" })["993901000000009"] === 1250);
+check("nothing set, nothing overridden", JSON.stringify(sanitisePackageSizes()) === "{}");
+
+// Every group in one answer, each only as far as the paste needs it.
+const bothGroups = packagesForDayByGroup([
+  ...st01,
+  sheathing("SH01", 90, "J", "PE black", 42),
+  coating("SC01", 240, "T", "PBTP for micro cable tube", 18),
+]);
+check("every packaged group is answered", Object.keys(bothGroups).join(",") === "frp,tube,jacket", Object.keys(bothGroups).join(","));
+check("rolls land under frp", bothGroups.frp.length === 1 && bothGroups.frp[0].packages === 2);
+check("bigbags of jacket compound land under jacket", bothGroups.jacket.length === 1 && bothGroups.jacket[0].packages === 5);
+check(
+  "and the granulate under tube, on the line that extrudes it",
+  bothGroups.tube.length === 1 && bothGroups.tube[0].lines.map((l) => l.line).join(",") === "SC01",
+  JSON.stringify(bothGroups.tube)
+);
+check("a day of 55 km takes 990 kg of granulate", bothGroups.tube[0].needed === 990, String(bothGroups.tube[0]?.needed));
+check("which is two bigbags of 500", bothGroups.tube[0].packages === 2, String(bothGroups.tube[0]?.packages));
+check("no FRP is ordered for a line that only extrudes tubes", bothGroups.frp[0].lines.every((l) => l.line !== "SC01"));
+check("and no jacket compound either", bothGroups.jacket[0].lines.every((l) => l.line !== "SC01"));
+check(
+  "a group nothing needs comes back empty rather than guessed",
+  packagesForDayByGroup(st01).jacket.length === 0
+);
+check("and a group that is not packaged at all is not invented", packagesForDay(st01, { group: "nope" }).length === 0);
+
+// A stage counted in its own units is converted back to cable before the
+// day is handed out against it: secondary coating of a four-tube cable
+// plans four of its own units per kilometre of cable, so 240 left there is
+// 60 km of cable left (see remainingInCableKm).
+check(
+  "a stage counted per tube is converted to cable kilometres",
+  remainingInCableKm({ totalLength: 200 }, { remaining: 240, planned: 800, inRunKm: false }) === 60,
+  String(remainingInCableKm({ totalLength: 200 }, { remaining: 240, planned: 800, inRunKm: false }))
+);
+check(
+  "a stage already in cable kilometres is left exactly as it is",
+  remainingInCableKm({ totalLength: 200 }, { remaining: 40, planned: 200, inRunKm: true }) === 40
+);
+check(
+  "and the whole day is handed out against the converted figure",
+  daySharesForLine([coating("SC01", 240, "T", "PBTP", 18)]).reduce((a, s) => a + s.km, 0) === 55
+);
+check(
+  "a stage with nothing to convert by gets no share of the day",
   daySharesForLine([
-    { line: "SC01", lineProcess: "sc", processes: { sc: dayStage(40, false) }, materials: { frp: [], jacket: [] } },
+    { line: "SC01", lineProcess: "sc", processes: { sc: dayStage(40, false) }, materials: { frp: [], tube: [], jacket: [] } },
   ]).length === 0
 );
-check("a line with nothing left takes nothing", frpRollsForDay([onLine("ST01", 0, "A", "FRP")]).length === 0);
+check("a line with nothing left takes nothing", packagesForDay([onLine("ST01", 0, "A", "FRP")]).length === 0);
 check(
   "a line whose stage is unknown is skipped",
-  frpRollsForDay([{ line: "FL01", lineProcess: null, processes: {}, materials: { frp: [], jacket: [] } }]).length === 0
+  packagesForDay([{ line: "FL01", lineProcess: null, processes: {}, materials: { frp: [], jacket: [] } }]).length === 0
 );
-check("nothing in, nothing out", frpRollsForDay([]).length === 0);
+check("nothing in, nothing out", packagesForDay([]).length === 0);
+
+// ── How much of it, counted off the line's own stage ─────────────────────
+// Not off the order: a position can be stranded and still have its whole
+// jacket to go, so an ST line asked for FRP against the order's remainder
+// was being sent FRP for cable it laid up days ago (2026-10-13).
+const lineBom = [
+  { itemNo: "A", requiredQuantity: 100, remainingQuantity: 100, unit: "KM" },
+  { itemNo: "B", requiredQuantity: null, remainingQuantity: null, unit: "KG" },
+];
+const stranded = {
+  lineProcess: "sz",
+  totalLength: 200,
+  // Stranding a quarter done, sheathing barely started: the order has most
+  // of itself left, this line does not.
+  processes: { sz: { planned: 200, remaining: 50, inRunKm: true }, sh: { planned: 200, remaining: 180, inRunKm: true } },
+};
+check(
+  "a material is counted off what its line still has to run",
+  materialsForLineStage(lineBom, stranded)[0].remainingQuantity === 25,
+  String(materialsForLineStage(lineBom, stranded)[0].remainingQuantity)
+);
+check(
+  "a stage counted per tube gives the same share without converting anything",
+  materialsForLineStage(lineBom, {
+    lineProcess: "sc",
+    totalLength: 200,
+    processes: { sc: { planned: 800, remaining: 240, inRunKm: false } },
+  })[0].remainingQuantity === 30
+);
+check("a material with no required amount stays without one", materialsForLineStage(lineBom, stranded)[1].remainingQuantity === null);
+check("and nothing else about a material is touched", materialsForLineStage(lineBom, stranded)[0].unit === "KM");
+check(
+  "a line whose stage is unknown leaves the amounts as they came",
+  materialsForLineStage(lineBom, { lineProcess: null, processes: {} })[0].remainingQuantity === 100
+);
+check(
+  "so does a stage with nothing planned",
+  materialsForLineStage(lineBom, { lineProcess: "sz", processes: { sz: { planned: 0, remaining: 0 } } })[0]
+    .remainingQuantity === 100
+);
+check("nothing in, nothing out", materialsForLineStage(undefined, stranded).length === 0);
+
+// ── Which kinds of material a line's own stage consumes ──────────────────
+// A position carries the whole cable's BOM; a line puts in only what its own
+// machine puts in (reported 2026-10-12 for FRP on a sheathing line, and
+// again 2026-10-13 for FRP on SC01).
+check("a stranding line takes FRP and nothing else", materialKeysForLineProcess("sz").join(",") === "frp");
+check("a secondary coating line takes the tube granulate", materialKeysForLineProcess("sc").join(",") === "tube");
+check("a sheathing line takes the jacket compound", materialKeysForLineProcess("sh").join(",") === "jacket");
+check(
+  "a line whose stage is unknown is shown everything rather than nothing",
+  materialKeysForLineProcess(null).join(",") === "frp,tube,jacket",
+  materialKeysForLineProcess(null).join(",")
+);
 
 // ─── Consumption per kilometre of cable ─────────────────────────────────────
 // Real BOM figures. The three FRP rows are the ones where CIP's own `qty`
@@ -455,6 +694,7 @@ console.log("\nMateriały przypisane do etapów:");
 
 const stageBom = [
   { itemNo: "993916000000119", name: "FRP/Ф1.6mm", category: "FRP", process: "SC", unit: "KM" },
+  { itemNo: "993907000000047", name: "PBTP for micro cable tube", category: "PBTP", process: "SC", unit: "KG" },
   { itemNo: "993403000000001", name: "General tube filling gel", category: "Jelly", process: "SC", unit: "KG" },
   { itemNo: "993901000000009", name: "HDPE Black/SCG", category: "PE", process: "SH", unit: "KG" },
   { itemNo: "993902000000001", name: "LSZH jacket material", category: "LSZH", process: "SH", unit: "KG" },
@@ -468,15 +708,17 @@ const stageBom = [
 
 const byStage = groupBomMaterialsByProcess(stageBom);
 check("stages are keyed by CIP's own process code", Object.keys(byStage).sort().join(",") === "sc,sh,sz", Object.keys(byStage).join(","));
-check("FRP lands in the stage that strands it", byStage.sc.frp.map((m) => m.itemNo).join(",") === "993916000000119", byStage.sc.frp.map((m) => m.itemNo).join(","));
+check("FRP lands under the stage CIP files it under", byStage.sc.frp.map((m) => m.itemNo).join(",") === "993916000000119", byStage.sc.frp.map((m) => m.itemNo).join(","));
 check("the jacket lands in the sheathing stage, PE and LSZH alike", byStage.sh.jacket.length === 2, String(byStage.sh.jacket.length));
-check("and not in the stranding one", byStage.sc.jacket.length === 0);
+check("and not in the stage before it", byStage.sc.jacket.length === 0);
+check("the granulate lands in the stage that extrudes the tubes", byStage.sc.tube.map((m) => m.itemNo).join(",") === "993907000000047", byStage.sc.tube.map((m) => m.itemNo).join(","));
+check("and not in the sheathing one", byStage.sh.tube.length === 0);
 check("a lower-case process code still matches", byStage.sz.frp.length === 1);
 check("a material with no stage is left out", !JSON.stringify(byStage).includes("993916000000219"));
 check("a stage CIP does not define is left out", !JSON.stringify(byStage).includes("993901000000266"));
 check(
   "a material of no interesting group leaves its stage's arrays empty rather than absent",
-  Array.isArray(byStage.sc.frp) && Array.isArray(byStage.sc.jacket)
+  Array.isArray(byStage.sc.frp) && Array.isArray(byStage.sc.tube) && Array.isArray(byStage.sc.jacket)
 );
 check("a stage nothing belongs to gets no entry at all", byStage.dp === undefined);
 check("nothing in, nothing out", JSON.stringify(groupBomMaterialsByProcess([])) === "{}");

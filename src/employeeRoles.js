@@ -13,13 +13,30 @@ import { ApiError } from "./errors.js";
 // Whatever reads it later must treat an employee with no row as having no
 // role, not as having every role.
 //
-// Roles are named after the job, one per person, matching the four apps a
-// person actually sits in front of:
-//   supervisor - the office/dashboard (wps)
-//   orderer    - the line foreman placing transports (smOrder)
-//   forklift   - the operator carrying them (smVendor)
-//   warehouse  - the PDA operator issuing stock (smpda)
-export const EMPLOYEE_ROLES = ["supervisor", "orderer", "forklift", "warehouse"];
+// Roles are named after the job, one per person. **There is only one of
+// them right now** (asked 2026-10-15):
+//   forklift   - the operator carrying the transports (smVendor)
+// Everything else is **no role**, and that is the absence of a row rather
+// than a role named "none": the screen's empty option calls
+// `deleteEmployeeRole`, and `upsertEmployeeRole` refuses "" like any other
+// value not on this list. So "no role" needs nothing here to exist, which
+// is also what makes it the safe default for whatever enforces roles later
+// - an employee with no row has no role, never every role.
+//
+// Dropped here, not deleted from the world: `supervisor` (wps),
+// `orderer` (smOrder), `warehouse` (smpda) and `test` (an account for
+// trying the apps out, asked for 2026-10-12) were all on this list until
+// 2026-10-15. Nothing enforced any of them, so narrowing it costs no
+// behaviour - and the screen offering four roles nobody hands out reads
+// as a decision somebody has made about who may do what, which is
+// exactly what it was not.
+//
+// **The database's CHECK still allows all five** (`employee_roles` in
+// schema.sql) and is deliberately left alone: it is a backstop against
+// garbage, not the catalogue, and tightening it would refuse rows that
+// already exist. This list is the one thing that decides what may be
+// handed out, because the route and the screen both read it.
+export const EMPLOYEE_ROLES = ["forklift"];
 
 function rowToApi(row) {
   return {
